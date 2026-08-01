@@ -114,6 +114,7 @@ function addExport(
   exportsList: ExportRecord[],
   exportedAs: string,
   node: AstNode,
+  identifierNode?: AstNode,
   options: Partial<Pick<ExportRecord, "name" | "isDefault" | "isReExport" | "isWildcard" | "isTypeOnly">> = {},
 ): void {
   const candidate: ExportRecord = {
@@ -124,7 +125,8 @@ function addExport(
     isWildcard: options.isWildcard ?? false,
     isTypeOnly: options.isTypeOnly ?? false,
   };
-  const location = positionRange(node);
+  // Use precise identifier node location if provided, otherwise default to full node
+  const location = positionRange(identifierNode) ?? positionRange(node);
   if (location) {
     candidate.location = location;
   }
@@ -285,32 +287,32 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
         const isTypeOnly = node.exportKind === "type";
         addEdge(edges, file, specifier, "export-from", node, names, isTypeOnly);
         for (const exportedName of names) {
-          addExport(exportsList, exportedName, node, { name: exportedName, isReExport: true, isTypeOnly: node.exportKind === "type" });
+          addExport(exportsList, exportedName, node, undefined, { name: exportedName, isReExport: true, isTypeOnly: node.exportKind === "type" });
         }
       } else if (isNode(node.declaration)) {
         const declaration = node.declaration;
         if ((declaration.type === "FunctionDeclaration" || declaration.type === "ClassDeclaration" || declaration.type === "TSInterfaceDeclaration" || declaration.type === "TSTypeAliasDeclaration" || declaration.type === "TSEnumDeclaration") && nodeIdentifierName(declaration.id)) {
           const isType = declaration.type === "TSInterfaceDeclaration" || declaration.type === "TSTypeAliasDeclaration" || node.exportKind === "type";
-          addExport(exportsList, nodeIdentifierName(declaration.id) ?? "unknown", node, { isTypeOnly: isType });
+          addExport(exportsList, nodeIdentifierName(declaration.id) ?? "unknown", node, declaration.id as AstNode, { isTypeOnly: isType });
         } else if (declaration.type === "VariableDeclaration") {
           for (const declarator of asArray(declaration.declarations)) {
             if (isNode(declarator)) {
               for (const name of bindingNames(declarator.id)) {
-                addExport(exportsList, name, node, { isTypeOnly: node.exportKind === "type" });
+                addExport(exportsList, name, node, declarator.id as AstNode, { isTypeOnly: node.exportKind === "type" });
               }
             }
           }
         }
       } else {
         for (const exportedName of exportSpecifierNames(asArray(node.specifiers))) {
-          addExport(exportsList, exportedName, node, { isTypeOnly: node.exportKind === "type" });
+          addExport(exportsList, exportedName, node, undefined, { isTypeOnly: node.exportKind === "type" });
         }
       }
       return;
     }
 
     if (node.type === "ExportDefaultDeclaration") {
-      addExport(exportsList, "default", node, { name: "default", isDefault: true, isTypeOnly: node.exportKind === "type" });
+      addExport(exportsList, "default", node, undefined, { name: "default", isDefault: true, isTypeOnly: node.exportKind === "type" });
       return;
     }
 
@@ -318,7 +320,7 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
       const specifier = nodeStringValue(node.source);
       if (specifier) {
         addEdge(edges, file, specifier, "export-all", node, ["*"], node.exportKind === "type");
-        addExport(exportsList, "*", node, { name: "*", isReExport: true, isWildcard: true, isTypeOnly: node.exportKind === "type" });
+        addExport(exportsList, "*", node, undefined, { name: "*", isReExport: true, isWildcard: true, isTypeOnly: node.exportKind === "type" });
       }
       return;
     }
@@ -356,20 +358,16 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
       if (objectName === "exports" && property) {
         addExport(exportsList, property, node);
       } else if (objectName === "exports") {
-        // This means `exports = ...` or `exports[dynamicKey] = ...`
         hasUnresolvedCommonJsExports = true;
       } else if (objectName === "module" && property === "exports") {
-        // This means `module.exports = ...`
         hasUnresolvedCommonJsExports = true;
       } else if (isNode(node.left.object) && node.left.object.type === "MemberExpression") {
         const moduleName = nodeIdentifierName(node.left.object.object);
         const moduleProperty = nodeIdentifierName(node.left.object.property);
         if (moduleName === "module" && moduleProperty === "exports" && property) {
-          // This means `module.exports.foo = ...`
           addExport(exportsList, property, node);
         }
       } else if ((node.left as any).name === "exports") {
-        // This handles `exports = { ... }`
         hasUnresolvedCommonJsExports = true;
       }
     }
@@ -471,10 +469,6 @@ function fallbackModule(sourceText: string, file: string, reason: unknown): Modu
   };
 }
 
-/**
- * Parse a module without executing it. Recoverable Babel diagnostics retain AST analysis;
- * unrecoverable input uses a lexical fallback so a bad file cannot sever graph traversal.
- */
 export function parseModule(sourceText: string, file: string): ModuleRecord {
   try {
     const parsed = parse(sourceText, {

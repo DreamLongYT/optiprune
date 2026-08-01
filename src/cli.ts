@@ -7,11 +7,11 @@ import { readJsonFile } from "./fs-utils.js";
 import { formatTerminal, formatSarif } from "./reporters.js";
 import type { AnalyzerOptions, ResolvedOptions } from "./types.js";
 
-const PKG_JSON = await readJsonFile<{ version?: string }>("package.json");
+const PKG_JSON = await readJsonFile("package.json") as { version?: string } | null;
 
 program
   .name("optiprune")
-  .version(PKG_JSON?.version ?? "1.0.0")
+  .version(PKG_JSON && typeof PKG_JSON.version === "string" ? PKG_JSON.version : "1.0.0")
   .description("Finds dead code in TypeScript/JavaScript projects.")
   .option("-r, --rootDir <path>", "Root directory of the project", process.cwd())
   .option("-e, --entry <patterns...>", "Entry point patterns (glob or file paths)", [])

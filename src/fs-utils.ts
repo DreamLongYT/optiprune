@@ -31,26 +31,13 @@ export const DEFAULT_IGNORE = [
   "**/vendor/**",
 ];
 
-/**
- * Normalizes paths universally for all operating systems and virtual filesystems.
- * Ensures Windows drive letters are capitalized and separators are POSIX-style.
- */
 export function normalizeCanonicalPath(filePath: string): string {
   if (!filePath) return "";
-  
-  // 1. Force backslashes to forward slashes
   let posixPath = filePath.replace(/\\/g, "/");
-  
-  // 2. Handle Windows Drive Letter (e.g., c:/ -> C:/)
-  // We check for the pattern "a:/" at the start
   if (/^[a-z]:\//i.test(posixPath)) {
     posixPath = posixPath.charAt(0).toUpperCase() + posixPath.slice(1);
   }
-  
-  // 3. Normalize using POSIX logic to avoid OS-specific quirks
   const normalized = path.posix.normalize(posixPath);
-  
-  // 4. Strip trailing slash unless it's the root
   return normalized.length > 1 && normalized.endsWith("/")
     ? normalized.slice(0, -1)
     : normalized;
@@ -61,7 +48,6 @@ export function toPosix(value: string): string {
 }
 
 export function normalizeAbsolute(value: string): string {
-  // Use path.resolve first to get the OS-specific absolute path, then canonicalize
   return normalizeCanonicalPath(path.resolve(value));
 }
 
@@ -76,7 +62,6 @@ function escapeRegex(value: string): string {
   return value.replace(/[|\\{}()[\]^$+?.]/g, "\\$&");
 }
 
-/** A deliberately small glob matcher supporting the configuration patterns this tool documents. */
 export function globToRegExp(pattern: string): RegExp {
   let source = "^";
   const normalized = pattern.replace(/\\/g, "/");
@@ -176,7 +161,7 @@ export function removeQueryAndHash(specifier: string): string {
 
 /**
  * Resolves an import specifier against a set of known files.
- * Uses POSIX path logic for consistency across platforms.
+ * INCLUDES MANUS FEATURE: Handles .js -> .ts / .tsx extension mapping!
  */
 export function resolveLocalSpecifier(
   sourceFilePath: string,
@@ -189,7 +174,6 @@ export function resolveLocalSpecifier(
     return undefined;
   }
 
-  // Use path.posix.dirname on a canonical path
   const sourceDir = path.posix.dirname(normalizeCanonicalPath(sourceFilePath));
   const absoluteBasePath = normalizeCanonicalPath(
     path.posix.resolve(sourceDir, cleaned)
@@ -203,7 +187,21 @@ export function resolveLocalSpecifier(
     return absoluteBasePath;
   }
 
-  // Strategy B: Append extensions
+  // Strategy B (MANUS FEATURE): Try extension aliases (.js -> .ts/.tsx)
+  const baseExtension = path.posix.extname(absoluteBasePath);
+  if (baseExtension) {
+    const aliases = SOURCE_EXTENSION_ALIASES.get(baseExtension);
+    if (aliases) {
+      for (const alias of aliases) {
+        const candidate = `${absoluteBasePath.slice(0, -baseExtension.length)}${alias}`;
+        if (existsInKnown(candidate)) {
+          return candidate;
+        }
+      }
+    }
+  }
+
+  // Strategy C: Append extensions
   for (const ext of extensions) {
     const candidate = `${absoluteBasePath}${ext}`;
     if (existsInKnown(candidate)) {
@@ -211,7 +209,7 @@ export function resolveLocalSpecifier(
     }
   }
 
-  // Strategy C: Search for index file
+  // Strategy D: Search for index file
   for (const ext of extensions) {
     const candidate = `${absoluteBasePath}/index${ext}`;
     if (existsInKnown(candidate)) {
@@ -226,7 +224,6 @@ function candidateSpecifiers(fromFile: string, candidate: string): string[] {
   const from = normalizeCanonicalPath(fromFile);
   const target = normalizeCanonicalPath(candidate);
   
-  // Use path.posix.relative on canonical paths
   const relative = path.posix.relative(path.posix.dirname(from), target);
   const withPrefix = relative.startsWith(".") ? relative : `./${relative}`;
   
@@ -383,6 +380,7 @@ export function relativeDisplayPath(rootDir: string, candidate: string): string 
   return relative || ".";
 }
 
+// RESTORED FIX: Accepts directories as valid roots even if they don't contain package.json
 export async function rootLooksValid(rootDir: string): Promise<boolean> {
   return directoryExists(rootDir);
 }
