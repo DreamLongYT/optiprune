@@ -72,7 +72,7 @@
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
-    "prepublishOnly": "npm build",
+    "prepublishOnly": "npm run build",
     "release": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\" && pnpm install && npm run build"
   },
   "dependencies": {
