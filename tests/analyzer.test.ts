@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { analyze } from "../src/index.js";
+import { analyze, shouldFail } from "../src/index.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as fs from "node:fs";
@@ -33,6 +33,8 @@ describe("Optiprune Analyzer", () => {
     const unusedB = report.findings.find((f) => f.rule === "unused-export" && f.evidence.exportName === "unusedB");
     expect(unusedB).toBeDefined();
     expect(unusedB?.confidence).toBe("high");
+    expect(shouldFail(report, "none")).toBe(false);
+    expect(shouldFail(report, "high")).toBe(true);
   });
 
   it("should handle invalid syntax gracefully with fallback parsing", async () => {

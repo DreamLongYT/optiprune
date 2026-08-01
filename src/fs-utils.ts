@@ -384,3 +384,18 @@ export function relativeDisplayPath(rootDir: string, candidate: string): string 
 export async function rootLooksValid(rootDir: string): Promise<boolean> {
   return directoryExists(rootDir);
 }
+
+export async function ingestTsConfigPaths(rootDir: string): Promise<Map<string, string[]>> {
+  const pathAliases = new Map<string, string[]>();
+  const tsconfigPath = path.join(rootDir, 'tsconfig.json');
+  try {
+    const tsconfig = JSON.parse(await fs.readFile(tsconfigPath, 'utf8'));
+    const paths = tsconfig.compilerOptions?.paths;
+    if (paths) {
+      for (const [alias, targets] of Object.entries(paths)) {
+        pathAliases.set(alias, targets as string[]);
+      }
+    }
+  } catch (e) {}
+  return pathAliases;
+}

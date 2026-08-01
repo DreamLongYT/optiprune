@@ -70,7 +70,26 @@ function resolveEdge(
     // console.log("Resolving " + edge.rawSpecifier + " from " + source.id + " -> " + target);
   }
   
-  // 2. Try Monorepo Workspace resolution
+  // 2. Try tsconfig path aliases
+  if (!target && options.pathAliases.size > 0) {
+    for (const [alias, targets] of options.pathAliases.entries()) {
+      const aliasPattern = alias.replace(/\*/g, "(.*)");
+      const matcher = new RegExp(`^${aliasPattern}$`);
+      const match = edge.rawSpecifier.match(matcher);
+
+      if (match) {
+        for (const targetPattern of targets) {
+          const resolvedSpecifier = targetPattern.replace(/\*/g, match[1] || "");
+          const absoluteTarget = path.resolve(options.rootDir, resolvedSpecifier);
+          target = resolveLocalSpecifier(source.id, absoluteTarget, knownFiles, options.extensions);
+          if (target) break;
+        }
+      }
+      if (target) break;
+    }
+  }
+
+  // 3. Try Monorepo Workspace resolution
   if (!target && options.monorepo) {
     // Check if the specifier starts with a workspace package name
     for (const [pkgName, pkg] of options.monorepo.packageMap.entries()) {
@@ -333,12 +352,6 @@ export function buildImportUsage(modules: Map<string, ModuleRecord>): Map<string
 export function buildUsedExports(modules: Map<string, ModuleRecord>): Set<string> {
   const usedExports = new Set<string>();
   const importUsage = buildImportUsage(modules);
-  
-  if (modules.size < 10) { // Only log for small test cases
-    for (const [mid, usage] of importUsage.entries()) {
-      console.log(`[DEBUG] Usage for ${mid}: wildcard=${usage.wildcard}, reExportOnly=${usage.reExportOnly}, names=[${Array.from(usage.names).join(',')}]`);
-    }
-  }
 
   for (const [moduleId, usage] of importUsage.entries()) {
     const module = modules.get(moduleId);

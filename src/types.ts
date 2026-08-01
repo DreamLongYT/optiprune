@@ -1,4 +1,5 @@
 export type Confidence = "high" | "medium" | "low" | "info";
+export type FailOn = Confidence | "none";
 export type Severity = "error" | "warning" | "info";
 export type ParseStatus = "parsed" | "recovered" | "fallback";
 export type EdgeKind =
@@ -134,7 +135,7 @@ export interface AnalyzerOptions {
   reportUnusedExports?: boolean;
   schemaEnums?: Record<string, string[]>;
   externalContracts?: string[]; // Added for Layer 5: list of externally consumed symbol names
-  failOn?: "high" | "medium" | "low" | "none";
+  failOn?: FailOn;
   json?: boolean;
   includeConventionalEntries?: boolean;
 }
@@ -149,7 +150,7 @@ export interface Config {
   externalContracts?: string[];
   reportUnusedExports?: boolean;
   includeConventionalEntries?: boolean;
-  failOn?: Confidence;
+  failOn?: FailOn;
   json?: boolean;
   layers?: {
     smtTimeoutMs?: number;
@@ -166,10 +167,11 @@ export interface ResolvedOptions {
   ignore: string[];
   reportUnusedExports: boolean;
   schemaEnums: Record<string, string[]>;
-  failOn: Confidence;
+  failOn: FailOn;
   json: boolean;
   includeConventionalEntries: boolean;
   monorepo?: MonorepoGraph;
+  pathAliases: Map<string, string[]>;
   externalContracts: string[];
   layers: {
     smtTimeoutMs: number;
@@ -239,12 +241,19 @@ export interface AnalysisContext {
   symbolicContracts?: Map<string, any>;
 }
 
-export interface AnalyzerPlugin {
+export interface PluginInstruction {
   name: string;
-  analyze(context: AnalysisContext): Finding[];
+  description: string;
+  identifyUsage(node: any, module: ModuleRecord, context: AnalysisContext): string[];
 }
 
-export const CONFIDENCE_RANK: Record<Confidence | "none", number> = {
+export interface AnalyzerPlugin {
+  name: string;
+  instructions: PluginInstruction[];
+  analyze?(context: AnalysisContext): Finding[];
+}
+
+export const CONFIDENCE_RANK: Record<FailOn, number> = {
   info: 0,
   low: 1,
   medium: 2,
