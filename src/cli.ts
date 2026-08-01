@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 import { Command } from "commander";
 const program = new Command();
 import { analyze, shouldFail } from "./index.js";
