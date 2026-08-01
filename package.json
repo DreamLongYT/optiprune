@@ -73,7 +73,7 @@
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
     "prepublishOnly": "pnpm run build",
-    "release": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\" && pnpm install && pnpm build"
+    "release": "node -e \"fs.rmSync('dist', { recursive: true, force: true })\" && pnpm install && npm run build"
   },
   "dependencies": {
     "@babel/cli": "^8.0.4",
