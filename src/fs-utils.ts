@@ -44,7 +44,7 @@ export function normalizeCanonicalPath(filePath: string): string {
   // 2. Handle Windows Drive Letter (e.g., c:/ -> C:/)
   // We check for the pattern "a:/" at the start
   if (/^[a-z]:\//i.test(posixPath)) {
-    posixPath = posixPath[0].toUpperCase() + posixPath.slice(1);
+    posixPath = posixPath.charAt(0).toUpperCase() + posixPath.slice(1);
   }
   
   // 3. Normalize using POSIX logic to avoid OS-specific quirks

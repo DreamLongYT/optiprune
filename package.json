@@ -1,15 +1,24 @@
 {
   "name": "optiprune",
-  "version": "0.1.0",
-  "private": true,
+  "version": "1.0.0",
   "description": "Resilient static dead-code analyzer for TypeScript and JavaScript workspaces.",
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "bin": {
     "optiprune": "./dist/cli.js"
   },
   "exports": {
-    ".": "./dist/index.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
@@ -18,7 +27,8 @@
     "analyze": "node ./dist/cli.js",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs"
+    "docs:preview": "vitepress preview docs",
+    "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
     "@babel/cli": "^8.0.4",
@@ -35,9 +45,9 @@
     "esbuild": "^0.28.1",
     "fast-glob": "^3.3.3",
     "js-yaml": "^5.2.2",
+    "pathe": "latest",
     "quickjs-emscripten": "^0.32.0",
-    "z3-solver": "^5.0.0",
-    "pathe": "latest"
+    "z3-solver": "^5.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
@@ -47,7 +57,7 @@
     "vue": "^3.5.40"
   },
   "engines": {
-    "node": "20.x"
+    "node": ">=20.0.0"
   },
   "license": "MIT"
 }
