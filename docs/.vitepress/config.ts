@@ -1,6 +1,9 @@
 import { defineConfig } from 'vitepress'
 
 export default defineConfig({
+  // 1. Tell VitePress your site is deployed at https://<user>.github.io/optiprune/
+  base: '/optiprune/',
+
   title: "Optiprune",
   description: "Resilient static dead-code analyzer for TypeScript and JavaScript workspaces.",
   
@@ -13,18 +16,19 @@ export default defineConfig({
     // Top-left navbar logo
     logo: '/logo.svg',
 
+    // 2. Use relative paths starting with '/' - VitePress will automatically prefix base URL
     nav: [
-      { text: 'Home', link: 'optiprune/' },
-      { text: 'Guide', link: 'optiprune/guide' },
-      { text: 'Architecture', link: 'optiprune/architecture' }
+      { text: 'Home', link: '/' },
+      { text: 'Guide', link: '/guide' },
+      { text: 'Architecture', link: '/architecture' }
     ],
 
     sidebar: [
       {
         text: 'Documentation',
         items: [
-          { text: 'Getting Started', link: 'optiprune/guide' },
-          { text: 'Architecture Layers', link: 'optiprune/architecture' }
+          { text: 'Getting Started', link: '/guide' },
+          { text: 'Architecture Layers', link: '/architecture' }
         ]
       }
     ],
