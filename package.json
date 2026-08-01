@@ -1,0 +1,53 @@
+{
+  "name": "optiprune",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Resilient static dead-code analyzer for TypeScript and JavaScript workspaces.",
+  "type": "module",
+  "bin": {
+    "optiprune": "./dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm vitest run --no-file-parallelism",
+    "test:watch": "vitest",
+    "analyze": "node ./dist/cli.js",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs"
+  },
+  "dependencies": {
+    "@babel/cli": "^8.0.4",
+    "@babel/core": "^8.0.1",
+    "@babel/helper-plugin-utils": "^8.0.1",
+    "@babel/parser": "^7.29.7",
+    "@babel/plugin-proposal-decorators": "^8.0.2",
+    "@babel/plugin-transform-typescript": "^8.0.1",
+    "@babel/preset-env": "^8.0.2",
+    "@babel/traverse": "^8.0.4",
+    "@babel/types": "^8.0.4",
+    "@swc/core": "^1.15.47",
+    "commander": "^15.0.0",
+    "esbuild": "^0.28.1",
+    "fast-glob": "^3.3.3",
+    "js-yaml": "^5.2.2",
+    "quickjs-emscripten": "^0.32.0",
+    "z3-solver": "^5.0.0",
+    "pathe": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "typescript": "^5.8.3",
+    "vitepress": "^1.6.4",
+    "vitest": "^3.2.4",
+    "vue": "^3.5.40"
+  },
+  "engines": {
+    "node": "20.x"
+  },
+  "license": "MIT"
+}

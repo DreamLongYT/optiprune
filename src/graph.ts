@@ -1,0 +1,404 @@
+import path from "pathe";
+import { resolveDynamicPattern, resolveLocalSpecifier } from "./fs-utils.js";
+import type {
+  AnalysisContext,
+  DependencyEdge,
+  ModuleRecord,
+  ResolvedOptions,
+  StronglyConnectedComponent,
+} from "./types.js";
+
+export interface GraphBuildResult {
+  components: StronglyConnectedComponent[];
+  reachable: Set<string>;
+  maybeReachable: Set<string>;
+  hasReachableUnknownDynamicBoundary: boolean;
+  usedExports: Set<string>;
+}
+
+export interface ImportUsage {
+  consumers: Set<string>;
+  names: Set<string>;
+  wildcard: boolean;
+  reExportOnly: boolean;
+}
+
+function dynamicParts(rawSpecifier: string): { prefix: string; suffix: string } | undefined {
+  const marker = "${…}";
+  const index = rawSpecifier.indexOf(marker);
+  if (index < 0) {
+    return undefined;
+  }
+  return {
+    prefix: rawSpecifier.slice(0, index),
+    suffix: rawSpecifier.slice(index + marker.length),
+  };
+}
+
+function resolveEdge(
+  edge: DependencyEdge,
+  source: ModuleRecord,
+  knownFiles: Set<string>,
+  options: ResolvedOptions,
+): void {
+  if (edge.kind === "unknown-dynamic") {
+    edge.resolution = "unknown";
+    return;
+  }
+
+  if (edge.kind === "dynamic-pattern") {
+    const parts = dynamicParts(edge.rawSpecifier);
+    if (!parts) {
+      edge.resolution = "unknown";
+      return;
+    }
+    const candidates = resolveDynamicPattern(source.id, parts.prefix, parts.suffix, knownFiles);
+    const baseDirectory = path.resolve(path.dirname(source.id), parts.prefix || ".");
+    edge.dynamicPattern = {
+      prefix: parts.prefix,
+      suffix: parts.suffix,
+      baseDirectory,
+      candidates,
+    };
+    edge.resolution = candidates.length > 0 ? "resolved" : "unresolved";
+    return;
+  }
+
+  // 1. Try local resolution
+  let target = resolveLocalSpecifier(source.id, edge.rawSpecifier, knownFiles, options.extensions);
+  if (edge.rawSpecifier.startsWith(".")) {
+    // console.log("Resolving " + edge.rawSpecifier + " from " + source.id + " -> " + target);
+  }
+  
+  // 2. Try Monorepo Workspace resolution
+  if (!target && options.monorepo) {
+    // Check if the specifier starts with a workspace package name
+    for (const [pkgName, pkg] of options.monorepo.packageMap.entries()) {
+      if (edge.rawSpecifier === pkgName || edge.rawSpecifier.startsWith(pkgName + '/')) {
+        // Resolve to the package's entry point (main/exports)
+        // For simplicity, we assume index.ts/js in the package root or src
+        const subPath = edge.rawSpecifier.slice(pkgName.length);
+        const pkgRoot = pkg.location;
+        
+        // Try common entry points if it's just the package name
+        if (!subPath || subPath === '/') {
+          const entries = ['src/index.ts', 'src/index.js', 'index.ts', 'index.js'];
+          for (const e of entries) {
+            const entryPath = path.join(pkgRoot, e);
+            if (knownFiles.has(entryPath)) {
+              target = entryPath;
+              break;
+            }
+          }
+        } else {
+          // Try resolving the sub-path
+          target = resolveLocalSpecifier(path.join(pkgRoot, 'package.json'), '.' + subPath, knownFiles, options.extensions);
+        }
+        
+        if (target) break;
+      }
+    }
+  }
+
+  if (target) {
+    edge.target = target;
+    edge.resolution = "resolved";
+  } else if (edge.rawSpecifier.startsWith(".") || edge.rawSpecifier.startsWith("/") || edge.rawSpecifier.startsWith("file:")) {
+    edge.resolution = "unresolved";
+  } else {
+    edge.resolution = "external";
+  }
+}
+
+export function resolveDependencies(modules: Map<string, ModuleRecord>, options: ResolvedOptions): void {
+  const knownFiles = new Set(modules.keys());
+  for (const module of modules.values()) {
+    for (const edge of module.edges) {
+      resolveEdge(edge, module, knownFiles, options);
+    }
+  }
+}
+
+export function edgeTargets(edge: DependencyEdge): string[] {
+  if (edge.target) {
+    return [edge.target];
+  }
+  return edge.dynamicPattern?.candidates ?? [];
+}
+
+function adjacencyFor(modules: Map<string, ModuleRecord>, moduleId: string): string[] {
+  const module = modules.get(moduleId);
+  if (!module) {
+    return [];
+  }
+  return module.edges.flatMap(edgeTargets).filter((target) => modules.has(target));
+}
+
+function reverseAdjacency(modules: Map<string, ModuleRecord>): Map<string, string[]> {
+  const reverse = new Map<string, string[]>();
+  for (const moduleId of modules.keys()) {
+    reverse.set(moduleId, []);
+  }
+  for (const module of modules.values()) {
+    for (const target of module.edges.flatMap(edgeTargets)) {
+      const reverseTargets = reverse.get(target);
+      if (reverseTargets) {
+        reverseTargets.push(module.id);
+      }
+    }
+  }
+  return reverse;
+}
+
+/** Kosaraju with explicit stacks avoids stack overflows on deep graphs and cycles. */
+export function stronglyConnectedComponents(modules: Map<string, ModuleRecord>): StronglyConnectedComponent[] {
+  const visited = new Set<string>();
+  const finishOrder: string[] = [];
+
+  for (const root of modules.keys()) {
+    if (visited.has(root)) {
+      continue;
+    }
+    const stack: Array<{ moduleId: string; nextIndex: number; neighbors: string[] }> = [];
+    visited.add(root);
+    stack.push({ moduleId: root, nextIndex: 0, neighbors: adjacencyFor(modules, root) });
+
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1];
+      if (!frame) {
+        break;
+      }
+      if (frame.nextIndex < frame.neighbors.length) {
+        const neighbor = frame.neighbors[frame.nextIndex];
+        frame.nextIndex += 1;
+        if (neighbor && !visited.has(neighbor)) {
+          visited.add(neighbor);
+          stack.push({ moduleId: neighbor, nextIndex: 0, neighbors: adjacencyFor(modules, neighbor) });
+        }
+      } else {
+        finishOrder.push(frame.moduleId);
+        stack.pop();
+      }
+    }
+  }
+
+  const reverse = reverseAdjacency(modules);
+  const assigned = new Set<string>();
+  const components: StronglyConnectedComponent[] = [];
+
+  while (finishOrder.length > 0) {
+    const root = finishOrder.pop();
+    if (!root || assigned.has(root)) {
+      continue;
+    }
+    const members: string[] = [];
+    const stack = [root];
+    assigned.add(root);
+    while (stack.length > 0) {
+      const current = stack.pop();
+      if (!current) {
+        continue;
+      }
+      members.push(current);
+      for (const neighbor of reverse.get(current) ?? []) {
+        if (!assigned.has(neighbor)) {
+          assigned.add(neighbor);
+          stack.push(neighbor);
+        }
+      }
+    }
+    members.sort((left, right) => left.localeCompare(right));
+    const selfLoop = members.length === 1 && adjacencyFor(modules, members[0] ?? "").includes(members[0] ?? "");
+    components.push({
+      id: components.length,
+      modules: members,
+      isCycle: members.length > 1 || selfLoop,
+    });
+  }
+
+  return components;
+}
+
+type ReachabilityCertainty = "exact" | "maybe";
+
+interface ReachabilityWorkItem {
+  moduleId: string;
+  certainty: ReachabilityCertainty;
+}
+
+/**
+ * Traverse the graph iteratively. Pattern imports and edges extracted from malformed files
+ * propagate `maybe` reachability. A reachable completely unknown dynamic boundary makes every
+ * project module only maybe-reachable, preventing unsafe unreachable-file claims.
+ */
+export function calculateReachability(
+  modules: Map<string, ModuleRecord>,
+  entryPoints: Set<string>,
+): Pick<GraphBuildResult, "reachable" | "maybeReachable" | "hasReachableUnknownDynamicBoundary"> {
+  const reachable = new Set<string>();
+  const maybeReachable = new Set<string>();
+  const queue: ReachabilityWorkItem[] = [...entryPoints].map((moduleId) => ({ moduleId, certainty: "exact" }));
+  let cursor = 0;
+  let hasReachableUnknownDynamicBoundary = false;
+
+  while (cursor < queue.length) {
+    const current = queue[cursor];
+    cursor += 1;
+    if (!current || !modules.has(current.moduleId)) {
+      continue;
+    }
+
+    if (current.certainty === "exact") {
+      if (reachable.has(current.moduleId)) {
+        continue;
+      }
+      reachable.add(current.moduleId);
+      maybeReachable.delete(current.moduleId);
+    } else if (reachable.has(current.moduleId) || maybeReachable.has(current.moduleId)) {
+      continue;
+    } else {
+      maybeReachable.add(current.moduleId);
+    }
+
+    const module = modules.get(current.moduleId);
+    if (!module) {
+      continue;
+    }
+    if (module.hasUnknownDynamicBoundary) {
+      hasReachableUnknownDynamicBoundary = true;
+    }
+
+    for (const edge of module.edges) {
+      // Type-only imports DO contribute to file reachability, but not necessarily runtime usage
+      // The `isTypeOnly` flag is preserved on the edge for later analysis.
+      const edgeIsMaybe = edge.kind === "dynamic-pattern" || module.parseStatus !== "parsed";
+      const childCertainty: ReachabilityCertainty =
+        current.certainty === "maybe" || edgeIsMaybe ? "maybe" : "exact";
+      for (const target of edgeTargets(edge)) {
+        queue.push({ moduleId: target, certainty: childCertainty });
+      }
+    }
+  }
+
+  if (hasReachableUnknownDynamicBoundary) {
+    for (const moduleId of modules.keys()) {
+      if (!reachable.has(moduleId)) {
+        maybeReachable.add(moduleId);
+      }
+    }
+  }
+
+  return { reachable, maybeReachable, hasReachableUnknownDynamicBoundary };
+}
+
+export function buildImportUsage(modules: Map<string, ModuleRecord>): Map<string, ImportUsage> {
+  const usage = new Map<string, ImportUsage>();
+  for (const module of modules.values()) {
+    for (const edge of module.edges) {
+      // We count all imports for usage, but we could later distinguish them if needed.
+      // For now, an import (even type-only) marks the export as used.
+      for (const target of edgeTargets(edge)) {
+        const current = usage.get(target) ?? { 
+          consumers: new Set<string>(), 
+          names: new Set<string>(), 
+          wildcard: false,
+          reExportOnly: true 
+        };
+        current.consumers.add(module.id);
+        
+        const isReExport = edge.kind === "export-all" || edge.kind === "export-from";
+        if (!isReExport) {
+          current.reExportOnly = false;
+        }
+
+        for (const name of edge.importedNames) {
+          current.names.add(name);
+          if (name === "*") {
+            current.wildcard = true;
+          }
+        }
+        if (edge.kind === "dynamic-pattern" || module.parseStatus !== "parsed") {
+          current.wildcard = true;
+        }
+        if (edge.kind === "export-all") {
+          current.wildcard = true;
+        }
+        usage.set(target, current);
+      }
+    }
+  }
+  return usage;
+}
+
+export function buildUsedExports(modules: Map<string, ModuleRecord>): Set<string> {
+  const usedExports = new Set<string>();
+  const importUsage = buildImportUsage(modules);
+  
+  if (modules.size < 10) { // Only log for small test cases
+    for (const [mid, usage] of importUsage.entries()) {
+      console.log(`[DEBUG] Usage for ${mid}: wildcard=${usage.wildcard}, reExportOnly=${usage.reExportOnly}, names=[${Array.from(usage.names).join(',')}]`);
+    }
+  }
+
+  for (const [moduleId, usage] of importUsage.entries()) {
+    const module = modules.get(moduleId);
+    if (!module) {
+      continue;
+    }
+
+    for (const exp of module.exports) {
+      // If an export is marked as an external contract, it's considered used.
+      if (exp.isExternalContract) {
+        usedExports.add(`${moduleId}:${exp.exportedAs}`);
+        continue; // Move to the next export
+      }
+
+      // Type-only exports are now tracked and can be marked as used by imports.
+
+        if (usage.wildcard) {
+        usedExports.add(`${moduleId}:${exp.exportedAs}`);
+      } else {
+        const importedName = Array.from(usage.names).find((name) => {
+          if (name === "default" && exp.isDefault) {
+            return true;
+          }
+          return exp.exportedAs === name;
+        });
+        if (importedName) {
+          usedExports.add(`${moduleId}:${exp.exportedAs}`);
+        }
+      }
+    }
+  }
+  return usedExports;
+}
+
+export function buildGraph(
+  modules: Map<string, ModuleRecord>,
+  entryPoints: Set<string>,
+  options: ResolvedOptions,
+): GraphBuildResult {
+  resolveDependencies(modules, options);
+  const components = stronglyConnectedComponents(modules);
+  const reachability = calculateReachability(modules, entryPoints);
+  const usedExports = buildUsedExports(modules);
+  return { components, ...reachability, usedExports };
+}
+
+export function contextWithGraph(
+  modules: Map<string, ModuleRecord>,
+  entryPoints: Set<string>,
+  options: ResolvedOptions,
+): AnalysisContext {
+  const graph = buildGraph(modules, entryPoints, options);
+  return {
+    options,
+    modules,
+    entryPoints,
+  reachable: graph.reachable,
+  maybeReachable: graph.maybeReachable,
+  components: graph.components,
+  usedExports: graph.usedExports,
+  candidateBranches: [],
+};
+}
