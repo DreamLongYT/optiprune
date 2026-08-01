@@ -122,7 +122,7 @@ export interface Finding {
   confidence: Confidence;
   message: string;
   file: string;
-  location?: Range;
+  location?: Range | undefined;
   evidence: Record<string, unknown>;
 }
 
@@ -235,6 +235,8 @@ export interface AnalysisContext {
   usedExports: Set<string>;
   candidateBranches: CandidateBranch[];
   monorepo?: MonorepoGraph;
+  semanticGraph?: any; // SemanticGraph instance
+  symbolicContracts?: Map<string, any>;
 }
 
 export interface AnalyzerPlugin {

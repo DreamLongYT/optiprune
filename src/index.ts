@@ -8,6 +8,9 @@ import { analyzeLayer3 } from "./layer3.js";
 import { analyzeLayer4 } from "./layer4.js";
 import { analyzeLayer5 } from "./layer5.js";
 import { analyzeLayer6 } from "./layer6.js";
+import { SemanticGraph } from "./semantic-graph.js";
+import { TopologyManager } from "./topology-manager.js";
+import { SymbolicEngine } from "./symbolic-engine.js";
 import { buildMonorepoTopology } from "./workspace.js";
 import { loadCache, saveCache, getFileHash, isCacheValid } from "./cache.js";
 import { formatTerminal, formatSarif } from "./reporters.js";
@@ -81,6 +84,9 @@ export async function analyze(options: AnalyzerOptions): Promise<AnalysisReport>
 
   const allSourceFiles = await discoverSourceFiles(rootDir, extensions, compiledIgnorePatterns);
   const modules = new Map<string, ModuleRecord>();
+  const semanticGraph = new SemanticGraph();
+  const topologyManager = new TopologyManager(semanticGraph);
+  const symbolicEngine = new SymbolicEngine(semanticGraph);
 
   let filesParsed = 0;
   let filesRecovered = 0;
@@ -183,6 +189,25 @@ let entryPoints = new Set<string>();
   }
 
   const context = contextWithGraph(modules, entryPoints, resolvedOptions);
+  context.semanticGraph = semanticGraph;
+  context.symbolicContracts = new Map();
+
+  // Headless Living Graph Engine: Initial Ingestion
+  for (const module of modules.values()) {
+    // In a full implementation, we would extract semantic nodes from the AST here.
+    // For now, we create a representative FileNode.
+    const fileNode = {
+      id: SemanticGraph.generateLei(module.id, 'File'),
+      contentHash: SemanticGraph.generateContentHash(module.sourceText),
+      type: 'File' as const,
+      name: module.id,
+      fileId: module.id,
+      metadata: {},
+      incomingReferences: [],
+      outgoingReferences: []
+    };
+    semanticGraph.addNode(fileNode);
+  }
 
   // Gated Layer 5: Schema Alignment
   if (hasFrameworkNodes || resolvedOptions.externalContracts?.length) {
@@ -309,6 +334,10 @@ let entryPoints = new Set<string>();
   // Phase 3: Layer 4 (node:vm sandbox)
   const layer4Findings = await analyzeLayer4(context);
   findings.push(...layer4Findings);
+  
+  // Phase 4: Headless Living Graph Engine (Symbolic Evaluation)
+  const symbolicFindings = await symbolicEngine.evaluateContracts(context);
+  findings.push(...symbolicFindings);
 
   const summary: AnalysisSummary = {
     filesDiscovered: allSourceFiles.length,
