@@ -5,8 +5,52 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "homepage": "https://dreamlongyt.github.io/optiprune/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DreamLongYT/optiprune.git"
+  },
+  "bugs": {
+    "url": "https://github.com/DreamLongYT/optiprune/issues"
+  },
+  "keywords": [
+    "analysis",
+    "analyze",
+    "class",
+    "cli",
+    "dead code",
+    "dependencies",
+    "detect",
+    "devDependencies",
+    "duplicate",
+    "entropy",
+    "enum",
+    "export",
+    "files",
+    "find",
+    "javascript",
+    "lint",
+    "maintenance",
+    "members",
+    "missing",
+    "monorepo",
+    "namespace",
+    "package",
+    "scan",
+    "types",
+    "typescript",
+    "unreferenced",
+    "unresolved",
+    "unused",
+    "workspace",
+    "optiprune",
+    "pruning",
+    "dead",
+    "opti",
+    "optimization"
+  ],
   "bin": {
-    "optiprune": "./dist/cli.js"
+    "optiprune": "dist/cli.js"
   },
   "exports": {
     ".": {
@@ -59,5 +103,10 @@
   "engines": {
     "node": ">=20.0.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "author": "DreamLongYT"
 }

@@ -14,23 +14,23 @@ export default defineConfig({
     logo: '/logo.svg',
 
     nav: [
-      { text: 'Home', link: '/' },
-      { text: 'Guide', link: '/guide' },
-      { text: 'Architecture', link: '/architecture' }
+      { text: 'Home', link: 'optiprune/' },
+      { text: 'Guide', link: 'optiprune/guide' },
+      { text: 'Architecture', link: 'optiprune/architecture' }
     ],
 
     sidebar: [
       {
         text: 'Documentation',
         items: [
-          { text: 'Getting Started', link: '/guide' },
-          { text: 'Architecture Layers', link: '/architecture' }
+          { text: 'Getting Started', link: 'optiprune/guide' },
+          { text: 'Architecture Layers', link: 'optiprune/architecture' }
         ]
       }
     ],
 
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/your-username/optiprune' }
+      { icon: 'github', link: 'https://github.com/DreamLongYT/optiprune' }
     ],
 
     footer: {
