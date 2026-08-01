@@ -1,29 +1,26 @@
-name: Publish to NPM
+name: Publish to npm
 
 on:
   push:
     branches:
-      - main # Change to 'master' if your default branch is master
+      - main
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # Required for NPM OIDC Trusted Publishing!
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
-          cache: 'npm'
+          node-version: 'latest'
+          registry-url: 'https://registry.npmjs.org'
 
-      - name: Install dependencies
-        run: npm ci
+      - run: npm ci
 
-      - name: Run build
-        run: tsc -p tsconfig.json
+      - run: tsc -p tsconfig.json
 
-      - name: Publish to NPM
-        run: npm publish --access public
+      - run: npm publish --access public
