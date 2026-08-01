@@ -7,7 +7,7 @@ on:
       - 'docs/**'
       - '.github/workflows/deploy-docs.yml'
       - 'package.json'
-      - 'pnpm-lock.yaml'
+      - 'package-lock.json'
 
   # Allows manual triggering from the Actions tab
   workflow_dispatch:
@@ -34,26 +34,21 @@ jobs:
         with:
           fetch-depth: 0 # Fetch all history so VitePress lastUpdated timestamps work correctly
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 8
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'pnpm'
+          cache: 'npm'
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: npm ci
 
       - name: Build VitePress site
         # Assumes your docs script is "docs:build" in package.json
-        run: pnpm run docs:build
+        run: npm run docs:build
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
