@@ -80,7 +80,7 @@ function resolveEdge(
       if (match) {
         for (const targetPattern of targets) {
           const resolvedSpecifier = targetPattern.replace(/\*/g, match[1] || "");
-          const absoluteTarget = path.resolve(options.rootDir, resolvedSpecifier);
+          const absoluteTarget = path.resolve(options.rootDir, options.baseUrl || ".", resolvedSpecifier);
           target = resolveLocalSpecifier(source.id, absoluteTarget, knownFiles, options.extensions);
           if (target) break;
         }
@@ -89,7 +89,13 @@ function resolveEdge(
     }
   }
 
-  // 3. Try Monorepo Workspace resolution
+  // 3. Try baseUrl resolution (non-relative imports)
+  if (!target && options.baseUrl && !edge.rawSpecifier.startsWith(".") && !path.isAbsolute(edge.rawSpecifier)) {
+    const absoluteTarget = path.resolve(options.rootDir, options.baseUrl, edge.rawSpecifier);
+    target = resolveLocalSpecifier(source.id, absoluteTarget, knownFiles, options.extensions);
+  }
+
+  // 4. Try Monorepo Workspace resolution
   if (!target && options.monorepo) {
     // Check if the specifier starts with a workspace package name
     for (const [pkgName, pkg] of options.monorepo.packageMap.entries()) {
@@ -290,7 +296,8 @@ export function calculateReachability(
     for (const edge of module.edges) {
       // Type-only imports DO contribute to file reachability, but not necessarily runtime usage
       // The `isTypeOnly` flag is preserved on the edge for later analysis.
-      const edgeIsMaybe = edge.kind === "dynamic-pattern" || module.parseStatus !== "parsed";
+      // If a module has a parse error, we treat its edges as "maybe" because the AST might be incomplete.
+      const edgeIsMaybe = edge.kind === "dynamic-pattern" || module.hasParseError;
       const childCertainty: ReachabilityCertainty =
         current.certainty === "maybe" || edgeIsMaybe ? "maybe" : "exact";
       for (const target of edgeTargets(edge)) {
@@ -369,7 +376,7 @@ export function buildImportUsage(modules: Map<string, ModuleRecord>): Map<string
             current.wildcard = true;
           }
         }
-        if (edge.kind === "dynamic-pattern" || module.parseStatus !== "parsed") {
+        if (edge.kind === "dynamic-pattern") {
           current.wildcard = true;
         }
         if (edge.kind === "export-all") {

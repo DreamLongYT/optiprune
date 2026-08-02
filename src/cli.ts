@@ -11,7 +11,7 @@ const PKG_JSON = await readJsonFile("package.json") as { version?: string } | nu
 
 program
   .name("optiprune")
-  .version(PKG_JSON && typeof PKG_JSON.version === "string" ? PKG_JSON.version : "1.8.0")
+  .version(PKG_JSON && typeof PKG_JSON.version === "string" ? PKG_JSON.version : "1.8.1")
   .description("Finds dead code in TypeScript/JavaScript projects.")
   .option("-r, --rootDir <path>", "Root directory of the project", process.cwd())
   .option("-e, --entry <patterns...>", "Entry point patterns (glob or file paths)", [])

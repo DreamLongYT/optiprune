@@ -209,10 +209,36 @@ export async function analyzeLayer6(context: AnalysisContext): Promise<Finding[]
           }
         }
 
-        // Check if it's a known config-heavy package or used in scripts
-        const isConfigPackage = ['eslint', 'prettier', 'vitest', 'jest', 'webpack', 'vite', 'rollup', 'postcss', 'tailwindcss', 'typescript'].some(p => dep.includes(p));
+        // Expanded Whitelist for config/tooling packages
+        const CONFIG_WHITELIST = [
+          'eslint', 'prettier', 'stylelint', 'commitlint', 'lint-staged', 'husky',
+          'vitest', 'jest', 'mocha', 'chai', 'cypress', 'playwright',
+          'webpack', 'vite', 'rollup', 'esbuild', 'parcel', 'gulp', 'grunt',
+          'postcss', 'tailwindcss', 'autoprefixer', 'sass', 'less',
+          'typescript', 'ts-node', 'tsx', 'babel', 'swc',
+          'nodemon', 'pm2', 'forever',
+          'semantic-release', 'lerna', 'changesets', 'turborepo', 'nx',
+          'dotenv', 'cross-env', 'env-cmd',
+          'ts-jest', 'babel-jest', 'vue-tsc', 'svelte-check',
+          'react-refresh', '@vitejs/plugin-', '@rollup/plugin-', 'eslint-plugin-', 'prettier-plugin-',
+          'typedoc', 'docusaurus', 'vitepress', 'astro',
+          'storybook', 'chromatic'
+        ];
         
-        if (!importedPackages.has(dep) && !scriptUsages.has(dep) && !isConfigPackage) {
+        const isConfigPackage = CONFIG_WHITELIST.some(p => dep.includes(p));
+        
+        // Heuristic: Check for common config files in root
+        const commonConfigs = [
+          '.eslintrc', '.prettierrc', 'vitest.config', 'jest.config', 'webpack.config', 'vite.config', 'rollup.config',
+          'postcss.config', 'tailwind.config', 'tsconfig.json', 'babel.config', 'swc.config', 'lerna.json', 'turbo.json',
+          'nx.json', '.env', 'svelte.config', 'vue.config', 'astro.config'
+        ];
+        const hasRelatedConfig = commonConfigs.some(cfg => {
+          const depBase = dep.split('/')[0]?.replace(/^@/, '').replace(/-config$/, '').replace(/config-/, '');
+          return cfg.includes(depBase || '___never___');
+        });
+
+        if (!importedPackages.has(dep) && !scriptUsages.has(dep) && !isConfigPackage && !hasRelatedConfig) {
           findings.push({
             rule: 'unused-export',
             severity: 'info', // devDeps are usually less critical

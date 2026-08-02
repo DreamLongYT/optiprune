@@ -42,7 +42,7 @@ import type {
 } from "./types.js";
 import { CONFIDENCE_RANK } from "./types.js";
 const pkg = (await readJsonFile("package.json")) as { version?: string } | null;
-const VERSION = pkg?.version ?? "1.8.0";
+const VERSION = pkg?.version ?? "1.8.1";
 
 import { DEFAULT_CONFIG, loadConfig, mergeConfig } from "./config-loader.js";
 
@@ -60,13 +60,14 @@ async function resolveOptions(options: AnalyzerOptions): Promise<ResolvedOptions
   if (options.skip3 !== undefined) merged.layers.skip3 = options.skip3;
   if (options.skip4 !== undefined) merged.layers.skip4 = options.skip4;
 
-  const pathAliases = await ingestTsConfigPaths(rootDir);
+  const { paths: pathAliases, baseUrl } = await ingestTsConfigPaths(rootDir);
 
   return {
     ...merged,
     entry: merged.entry?.map((entry) => normalizeAbsolute(path.resolve(rootDir, entry))) ?? [],
     ignore: [...DEFAULT_IGNORE, ...(merged.ignore ?? [])],
     pathAliases,
+    baseUrl,
   } as ResolvedOptions;
 }
 
@@ -105,8 +106,14 @@ export async function analyze(options: AnalyzerOptions): Promise<AnalysisReport>
   let hasFrameworkNodes = false;
 
   for (const file of allSourceFiles) {
-    // BOM-safe file reader to prevent Babel/TS AST parse recovery warnings
-    const rawText = await fs.readFile(file, "utf8");
+    let rawText: string;
+    try {
+      // BOM-safe file reader to prevent Babel/TS AST parse recovery warnings
+      rawText = await fs.readFile(file, "utf8");
+    } catch (e: any) {
+      if (e.code === 'ENOENT') continue;
+      throw e;
+    }
     const sourceText = rawText.charCodeAt(0) === 0xFEFF ? rawText.slice(1) : rawText;
 
     const currentHash = getFileHash(sourceText);
@@ -268,7 +275,7 @@ let entryPoints = new Set<string>();
   if (resolvedOptions.reportUnusedExports) {
     const importUsage = buildImportUsage(modules);
     for (const module of modules.values()) {
-      if (context.reachable.has(module.id)) {
+      if (context.reachable.has(module.id) || context.maybeReachable.has(module.id)) {
         for (const exp of module.exports) {
           // If it's an external contract (Layer 5/6), it's NEVER unused.
           if (exp.isExternalContract) continue;
@@ -276,12 +283,17 @@ let entryPoints = new Set<string>();
           // If the module is a public entry point (e.g. from package.json), its exports are part of the public API and should not be reported as unused.
           if ((context as any).publicEntryPoints?.has(module.id)) continue;
 
-          // If the module is only "maybeReachable" (e.g. detected via dynamic discovery),
-          // or if we have a reachable unknown dynamic boundary (making any module potentially used),
-          // we protect its exports to avoid false-positives.
-          if (context.maybeReachable.has(module.id) || context.hasReachableUnknownDynamicBoundary) continue;
-
           const isExportUsed = context.usedExports.has(`${module.id}:${exp.exportedAs}`);
+          
+          // If the module is only "maybeReachable" (e.g. detected via dynamic discovery),
+          // or if we have a reachable unknown dynamic boundary (World Peace),
+          // we still report unused exports but with lower confidence to avoid false positives
+          // while still providing value.
+          let confidence: import('./types.js').Confidence = "high";
+          if (context.maybeReachable.has(module.id)) confidence = "medium";
+          if (context.hasReachableUnknownDynamicBoundary) confidence = "low";
+
+          if (context.hasReachableUnknownDynamicBoundary && isExportUsed) continue;
           
           // Refinement for Monorepo/Re-export chains:
           // If an export is "used" but ONLY by modules that themselves are only re-exporting it
@@ -306,7 +318,7 @@ let entryPoints = new Set<string>();
             findings.push({
               rule: "unused-export",
               severity: "warning",
-              confidence: "high",
+              confidence: confidence,
               message: "Export '" + exp.exportedAs + "' is never imported or referenced.",
               file: module.id,
               ...(exp.location && { location: exp.location }),

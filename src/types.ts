@@ -68,6 +68,7 @@ export interface ModuleRecord {
   exports: ExportRecord[];
   edges: DependencyEdge[];
   hasUnknownDynamicBoundary: boolean;
+  hasParseError: boolean;
   hasUnresolvedCommonJsExports: boolean;
   scannedDirectories: string[];
 }
@@ -177,6 +178,7 @@ export interface ResolvedOptions {
   includeConventionalEntries: boolean;
   monorepo?: MonorepoGraph;
   pathAliases: Map<string, string[]>;
+  baseUrl?: string;
   externalContracts: string[];
   layers: {
     smtTimeoutMs: number;

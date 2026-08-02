@@ -442,6 +442,7 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
     exports: exportsList,
     edges,
     hasUnknownDynamicBoundary,
+    hasParseError: parserErrors.length > 0,
     hasUnresolvedCommonJsExports,
     scannedDirectories,
   };
@@ -471,23 +472,58 @@ function fallbackExports(sourceText: string, file: string): ExportRecord[] {
 
 function fallbackEdges(sourceText: string, file: string): DependencyEdge[] {
   const edges: DependencyEdge[] = [];
+  
+  // 1. Detailed Import Pattern: import { a, b as c } from '...'
+  const detailedImportRegex = /\bimport\s+(?:\{([^}]+)\}|([a-zA-Z_$][\w$]*)(?:\s*,\s*\{([^}]+)\})?|\*\s+as\s+([a-zA-Z_$][\w$]*))\s+from\s+["']([^"'\n]+)["']/g;
+  for (const match of sourceText.matchAll(detailedImportRegex)) {
+    const namedImports = match[1] || match[3];
+    const defaultImport = match[2];
+    const namespaceImport = match[4];
+    const specifier = match[5];
+    
+    if (specifier) {
+      const names: string[] = [];
+      if (namespaceImport) names.push("*");
+      if (defaultImport) names.push("default");
+      if (namedImports) {
+        namedImports.split(",").forEach(n => {
+          const parts = n.trim().split(/\s+as\s+/i);
+          const imported = parts[0]?.trim();
+          if (imported) names.push(imported);
+        });
+      }
+      
+      edges.push({
+        source: file,
+        rawSpecifier: specifier,
+        kind: "import",
+        importedNames: names.length > 0 ? names : ["*"],
+        resolution: "unknown",
+        location: locationAtOffset(sourceText, match.index ?? 0),
+      });
+    }
+  }
+
+  // 2. Simple/Other Patterns
   const patterns: Array<{ regex: RegExp; kind: DependencyEdge["kind"] }> = [
-    { regex: /\bimport\s+(?:[\w*$\s{},]+\s+from\s+)?["']([^"'\n]+)["']/g, kind: "import" },
+    { regex: /\bimport\s+["']([^"'\n]+)["']/g, kind: "import" }, // side-effect import
     { regex: /\bexport\s+(?:\*|\{[^}]*\})\s+from\s+["']([^"'\n]+)["']/g, kind: "export-from" },
     { regex: /\brequire\s*\(\s*["']([^"'\n]+)["']\s*\)/g, kind: "require" },
     { regex: /\bimport\s*\(\s*["']([^"'\n]+)["']\s*\)/g, kind: "dynamic-literal" },
   ];
   for (const { regex, kind } of patterns) {
     for (const match of sourceText.matchAll(regex)) {
-      const edge: DependencyEdge = {
-        source: file,
-        rawSpecifier: match[1] ?? "<unknown>",
-        kind,
-        importedNames: ["*"],
-        resolution: "unknown",
-        location: locationAtOffset(sourceText, match.index ?? 0),
-      };
-      edges.push(edge);
+      const specifier = match[1];
+      if (specifier && !edges.some(e => e.rawSpecifier === specifier && e.location?.start.line === locationAtOffset(sourceText, match.index ?? 0).start.line)) {
+        edges.push({
+          source: file,
+          rawSpecifier: specifier,
+          kind,
+          importedNames: ["*"],
+          resolution: "unknown",
+          location: locationAtOffset(sourceText, match.index ?? 0),
+        });
+      }
     }
   }
   for (const match of sourceText.matchAll(/\bimport\s*\(\s*`([^`]*)`\s*\)/g)) {
@@ -509,14 +545,14 @@ function fallbackEdges(sourceText: string, file: string): DependencyEdge[] {
 }
 
 function fallbackModule(sourceText: string, file: string, reason: unknown): ModuleRecord {
-  const message = reason instanceof Error ? reason.message : "Parser could not recover this file";
+  const originalMessage = reason instanceof Error ? reason.message : "Parser could not recover this file";
   return {
     id: file,
     relativePath: file,
     parseStatus: "fallback",
     parseDiagnostics: [
       {
-        message: "Module parse failed, using regex fallback.",
+        message: `${originalMessage} (Module parse failed, using regex fallback)`,
         file,
         recovered: false,
       },
@@ -524,7 +560,8 @@ function fallbackModule(sourceText: string, file: string, reason: unknown): Modu
     sourceText,
     exports: fallbackExports(sourceText, file),
     edges: fallbackEdges(sourceText, file),
-    hasUnknownDynamicBoundary: true,
+    hasUnknownDynamicBoundary: false, // Parse error is not necessarily a dynamic boundary
+    hasParseError: true,
     hasUnresolvedCommonJsExports: true,
     scannedDirectories: [],
   };

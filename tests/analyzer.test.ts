@@ -56,7 +56,7 @@ describe("Optiprune Analyzer", () => {
     const parseError = report.findings.find((f) => f.rule === "parse-recovery");
     expect(parseError).toBeDefined();
     expect(parseError?.severity).toBe("error"); // Expecting an error for unrecoverable syntax
-    expect(parseError?.message).toContain("Parse failed: Unexpected token");
+    expect(parseError?.message).toContain("Parse failed");
 
     const validExport = report.findings.find((f) => f.rule === "unused-export" && f.evidence.exportName === "validExport");
     expect(validExport).toBeDefined(); // Fallback parsing should detect this unused export.

@@ -160,7 +160,11 @@ export async function discoverSourceFiles(
 }
 
 export function isLikelyLocalSpecifier(specifier: string): boolean {
-  return specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("file:");
+  return (
+    specifier.startsWith(".") ||
+    specifier.startsWith("file:") ||
+    isAbsolute(specifier)
+  );
 }
 
 export function removeQueryAndHash(specifier: string): string {
@@ -409,17 +413,49 @@ export async function rootLooksValid(rootDir: string): Promise<boolean> {
   return directoryExists(rootDir);
 }
 
-export async function ingestTsConfigPaths(rootDir: string): Promise<Map<string, string[]>> {
+export async function ingestTsConfigPaths(rootDir: string, configPath: string = "tsconfig.json"): Promise<{ paths: Map<string, string[]>, baseUrl: string | undefined }> {
   const pathAliases = new Map<string, string[]>();
-  const tsconfigPath = join(rootDir, "tsconfig.json");
+  const fullTsconfigPath = isAbsolute(configPath) ? configPath : join(rootDir, configPath);
 
   const tsconfig = await readJsonFile<{
+    extends?: string | string[];
     compilerOptions?: {
+      baseUrl?: string;
       paths?: Record<string, string[]>;
     };
-  }>(tsconfigPath);
+  }>(fullTsconfigPath);
 
-  const paths = tsconfig?.compilerOptions?.paths;
+  if (!tsconfig) return { paths: pathAliases, baseUrl: undefined };
+
+  // 1. Handle inheritance (extends)
+  if (tsconfig.extends) {
+    const extensions = Array.isArray(tsconfig.extends) ? tsconfig.extends : [tsconfig.extends];
+    for (const ext of extensions) {
+      let extPath = ext;
+      if (ext.startsWith(".")) {
+        extPath = join(dirname(fullTsconfigPath), ext);
+        if (!extPath.endsWith(".json")) extPath += ".json";
+      } else {
+        // Handle node_modules resolution for extends (simplified)
+        extPath = join(rootDir, "node_modules", ext);
+        if (!(await fileExists(extPath))) {
+          if (await fileExists(extPath + ".json")) extPath += ".json";
+          else if (await fileExists(join(extPath, "tsconfig.json"))) extPath = join(extPath, "tsconfig.json");
+        }
+      }
+      
+      const parentConfig = await ingestTsConfigPaths(rootDir, extPath);
+      for (const [alias, targets] of parentConfig.paths.entries()) {
+        pathAliases.set(alias, targets);
+      }
+    }
+  }
+
+  // 2. Base URL
+  const baseUrl = tsconfig.compilerOptions?.baseUrl;
+
+  // 3. Paths
+  const paths = tsconfig.compilerOptions?.paths;
   if (paths && typeof paths === "object") {
     for (const [alias, targets] of Object.entries(paths)) {
       if (Array.isArray(targets)) {
@@ -428,5 +464,5 @@ export async function ingestTsConfigPaths(rootDir: string): Promise<Map<string, 
     }
   }
 
-  return pathAliases;
+  return { paths: pathAliases, baseUrl };
 }
