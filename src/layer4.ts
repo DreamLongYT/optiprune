@@ -81,7 +81,8 @@ async function verifyPathInWasmSandbox(
       Object.assign(globalThis, seeds);
     `;
     
-    context.evalCode(setupScript);
+    const setupResult = context.evalCode(setupScript);
+    setupResult.dispose();
     
     // Execute the instrumented code
     // We wrap it in a try-catch to prevent VM crashes from throwing in the host
@@ -90,9 +91,14 @@ async function verifyPathInWasmSandbox(
     // QuickJS-emscripten evalCode is synchronous but we can enforce a timeout
     // In a more complex setup we'd use a worker, but for concolic execution snippets,
     // we rely on the host's performance.now() and runtime limits.
-    context.evalCode(wrappedCode);
+    const evalResult = context.evalCode(wrappedCode);
+    evalResult.dispose();
     
-    const pathReached = context.dump(context.getProp(context.global, "__PROVE_REACHED__"));
+    const globalHandle = context.global;
+    const reachedHandle = context.getProp(globalHandle, "__PROVE_REACHED__");
+    const pathReached = context.dump(reachedHandle);
+    reachedHandle.dispose();
+    globalHandle.dispose();
 
     return {
       pathReached: Boolean(pathReached),

@@ -113,7 +113,7 @@ async function analyzeIfStatement(
 ) {
   const file = module.id;
   const condition = node.test;
-  const predicate = encodePredicate(condition, z3);
+  const predicate = encodePredicate(condition, z3, solver, module);
   
   if (predicate && typeof predicate !== 'string') {
     // 1. Check if the 'then' branch is reachable
@@ -214,12 +214,58 @@ async function analyzeIfStatement(
   }
 }
 
-export function encodePredicate(node: any, z3: any): any {
+function resolveFunctionLiteral(name: string, module: ModuleRecord): any | null {
+  const ast = module.ast as any;
+  let returnValue: any = null;
+  let found = false;
+
+  walkAst(ast, (n) => {
+    const node = n as any;
+    if (found) return;
+    if (node.type === "FunctionDeclaration" && node.id?.name === name) {
+      const body = node.body.body;
+      if (body.length === 1 && body[0].type === "ReturnStatement") {
+        const arg = body[0].argument;
+        if (arg.type === "BooleanLiteral" || arg.type === "NumericLiteral" || arg.type === "StringLiteral") {
+          returnValue = arg.value;
+          found = true;
+        } else if (arg.type === "Literal") {
+          returnValue = arg.value;
+          found = true;
+        }
+      }
+    }
+  });
+  return found ? returnValue : null;
+}
+
+function encodeLiteral(value: any, z3: any): any {
+  if (typeof value === 'number') {
+    // Always use Real for numbers to avoid sort mismatches when comparing with Real identifiers
+    return z3.Real.val(value);
+  }
+  if (typeof value === 'boolean') {
+    return z3.Bool.val(value);
+  }
+  return null;
+}
+
+function flattenMemberExpression(node: any): string | null {
+  if (node.type === "Identifier") return node.name;
+  if (node.type === "MemberExpression") {
+    const obj = flattenMemberExpression(node.object);
+    const prop = node.computed ? null : (node.property.type === "Identifier" ? node.property.name : null);
+    if (obj && prop) return `${obj}.${prop}`;
+  }
+  return null;
+}
+
+export function encodePredicate(node: any, z3: any, solver?: any, module?: ModuleRecord): any {
   if (!node) return null;
 
   if (node.type === "BinaryExpression") {
-    const left = encodePredicate(node.left, z3);
-    const right = encodePredicate(node.right, z3);
+    const left = encodePredicate(node.left, z3, solver, module);
+    const right = encodePredicate(node.right, z3, solver, module);
     
     if (left && right && typeof left !== 'string' && typeof right !== 'string') {
       try {
@@ -247,19 +293,70 @@ export function encodePredicate(node: any, z3: any): any {
   
   if (node.type === "Identifier") {
     try {
-        return z3.Int.const(node.name);
+        // Use Real for identifiers to handle both integers and floats in JS
+        return z3.Real.const(node.name);
     } catch (e) {
         return null;
     }
   }
+
+  if (node.type === "MemberExpression") {
+    const name = flattenMemberExpression(node);
+    if (name) {
+      return z3.Real.const(name);
+    }
+  }
   
   if (node.type === "NumericLiteral" || (node.type === "Literal" && typeof node.value === 'number')) {
-    return z3.Int.val(node.value);
+    return encodeLiteral(node.value, z3);
+  }
+
+  if (node.type === "BooleanLiteral" || (node.type === "Literal" && typeof node.value === 'boolean')) {
+    return z3.Bool.val(node.value);
+  }
+
+  if (node.type === "UnaryExpression") {
+    const arg = encodePredicate(node.argument, z3, solver, module);
+    if (arg) {
+      if (node.operator === "!") {
+        if (z3.isBool(arg)) return z3.Not(arg);
+        if (z3.isArith(arg)) {
+          const zero = z3.isInt(arg) ? z3.Int.val(0) : z3.Real.val(0);
+          return arg.eq(zero);
+        }
+        return z3.Not(arg);
+      }
+      if (node.operator === "-") {
+        if (z3.isArith(arg)) return arg.neg();
+      }
+    }
+  }
+
+  if (node.type === "CallExpression") {
+    const callee = node.callee;
+    // Handle Math.random()
+    if (callee.type === "MemberExpression" && 
+        callee.object.type === "Identifier" && callee.object.name === "Math" &&
+        callee.property.type === "Identifier" && callee.property.name === "random") {
+      const randVar = z3.Real.const(`math_random_${node.loc?.start.line}_${node.loc?.start.column}`);
+      if (solver) {
+        solver.add(randVar.ge(z3.Real.val(0)));
+        solver.add(randVar.lt(z3.Real.val(1)));
+      }
+      return randVar;
+    }
+    // Handle simple pure functions in the same module
+    if (callee.type === "Identifier" && module) {
+      const val = resolveFunctionLiteral(callee.name, module);
+      if (val !== null) {
+        return encodeLiteral(val, z3);
+      }
+    }
   }
 
   if (node.type === "LogicalExpression") {
-    const left = encodePredicate(node.left, z3);
-    const right = encodePredicate(node.right, z3);
+    const left = encodePredicate(node.left, z3, solver, module);
+    const right = encodePredicate(node.right, z3, solver, module);
     if (left && right && typeof left !== 'string' && typeof right !== 'string') {
         try {
             if (node.operator === "&&") return z3.And(left, right);
