@@ -196,6 +196,11 @@ export async function analyzeLayer6(context: AnalysisContext): Promise<Finding[]
 
       // 3. Audit DevDependencies
       for (const dep of Object.keys(devDependencies)) {
+        // Prevent self-reporting (ignore the package's own name if listed in devDeps)
+        if (pkg.name && dep === pkg.name) {
+          continue;
+        }
+
         // Special handling for @types/
         if (dep.startsWith('@types/')) {
           const basePkg = dep.slice(7).replace('__', '/');

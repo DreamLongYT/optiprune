@@ -1,6 +1,6 @@
 {
   "name": "optiprune",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Resilient static dead-code analyzer for TypeScript and JavaScript workspaces.",
   "type": "module",
   "main": "./dist/index.js",
@@ -91,7 +91,7 @@
     "fast-glob": "^3.3.3",
     "js-yaml": "^5.2.2",
     "nodejs": "^0.0.0",
-    "pathe": "latest",
+    "pathe": "2.0.3",
     "quickjs-emscripten": "^0.32.0",
     "z3-solver": "^5.0.0"
   },
