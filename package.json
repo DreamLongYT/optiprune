@@ -1,6 +1,6 @@
 {
   "name": "optiprune",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "description": "Resilient static dead-code analyzer for TypeScript and JavaScript workspaces.",
   "type": "module",
   "main": "./dist/index.js",
@@ -64,8 +64,8 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "check": "tsc -p tsconfig.json --noEmit",
+    "build": "npx tsc -p tsconfig.json",
+    "check": "npx tsc -p tsconfig.json --noEmit",
     "test": "vitest run --no-file-parallelism",
     "test:watch": "vitest",
     "analyze": "node ./dist/cli.js",
@@ -90,6 +90,7 @@
     "esbuild": "^0.28.1",
     "fast-glob": "^3.3.3",
     "js-yaml": "^5.2.2",
+    "nodejs": "^0.0.0",
     "pathe": "latest",
     "quickjs-emscripten": "^0.32.0",
     "z3-solver": "^5.0.0"

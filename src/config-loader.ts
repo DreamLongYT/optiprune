@@ -20,6 +20,8 @@ export const DEFAULT_CONFIG: ResolvedOptions = {
     smtTimeoutMs: 100,
     isolateMemoryLimitMb: 16,
     enableConcolicProof: true,
+    skip3: false,
+    skip4: false,
   },
   rules: {
     'unused-export': 'warning',

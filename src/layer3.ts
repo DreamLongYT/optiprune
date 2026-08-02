@@ -27,9 +27,15 @@ export async function analyzeLayer3(context: AnalysisContext): Promise<Finding[]
     return [];
   }
 
-  const { init } = await import("z3-solver");
-  const { Context } = await init();
-  const z3 = Context('main');
+  let z3: any;
+  try {
+    const { init } = await import("z3-solver");
+    const { Context } = await init();
+    z3 = Context('main');
+  } catch (e) {
+    console.warn(`[Layer 3] Failed to initialize Z3 solver: ${e instanceof Error ? e.message : String(e)}`);
+    return [];
+  }
 
   for (const module of context.modules.values()) {
     if (module.parseStatus === "fallback" || !module.ast) {

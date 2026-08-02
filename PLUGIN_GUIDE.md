@@ -1,57 +1,68 @@
-# OptiPrune Plugin Guide: Instruction-based Analysis
+# OptiPrune Plugin Guide: Plugin Adapter Architecture
 
-OptiPrune uses a **lightweight instruction-based plugin system**. Unlike other tools that require complex dependency graph manipulation, OptiPrune plugins provide simple "instructions" to the core engine.
+OptiPrune uses a formal **Plugin Adapter** architecture. Plugins interact with the core analyzer through a secure, abstracted bridge that provides reading, writing, and control abilities.
 
-## What is an Instruction?
+## The Plugin Structure
 
-An instruction is a simple rule that tells the engine: *"If you see this specific pattern in the code, mark these exports as used."*
-
-This is much more efficient than full static analysis for framework-specific patterns (like Zod, NestJS, or Prisma).
-
-## Creating a Plugin
-
-A plugin consists of a name and a list of instructions.
+A plugin implements the `AnalyzerPlugin` interface, which uses lifecycle hooks to interact with the analysis process.
 
 ```typescript
-import { AnalyzerPlugin, PluginInstruction, AnalysisContext, ModuleRecord } from './types';
+import { AnalyzerPlugin, PluginAdapter } from './types';
 import * as t from '@babel/types';
 
-export const MyFrameworkPlugin: AnalyzerPlugin = {
-  name: "my-framework",
-  instructions: [
-    {
-      name: "detect-custom-decorator",
-      description: "Marks classes with @CustomDecorator as used.",
-      identifyUsage(node, module, context) {
-        const used = [];
-        
-        // Check if node is a class with a specific decorator
-        if (t.isClassDeclaration(node) && node.decorators) {
-          const hasDecorator = node.decorators.some(d => 
-            t.isIdentifier(d.expression) && d.expression.name === 'CustomDecorator'
-          );
-          
-          if (hasDecorator && node.id) {
-            used.push(node.id.name);
-          }
-        }
-        
-        return used;
+export const MyPlugin: AnalyzerPlugin = {
+  name: "my-plugin",
+  version: "1.0.0",
+  // Optional: Only enable if a specific condition is met
+  detect: async (adapter) => {
+    const pkg = await adapter.readJson('package.json');
+    return pkg?.dependencies?.['my-framework'] !== undefined;
+  },
+  lifecycle: {
+    onProjectInit: async (adapter) => {
+      console.log("Analysis starting for:", adapter.getConfig().rootDir);
+    },
+    onASTNode: (node, fileId, adapter) => {
+      if (t.isFunctionDeclaration(node) && node.id?.name.startsWith('handle')) {
+        adapter.markAsUsed(fileId, node.id.name);
       }
     }
-  ]
+  }
 };
 ```
 
-## How it Works
+## The Plugin Adapter API
 
-1.  **AST Walking**: The core engine walks the AST of every reachable file once.
-2.  **Instruction Execution**: For every node, all registered instructions are called.
-3.  **Usage Marking**: If an instruction returns identifiers, the engine marks them as `used` in the global context.
-4.  **Final Sweep**: The engine compares the `used` list against all exports to find dead code.
+The `PluginAdapter` provides the following abilities:
+
+### 1. Reading Abilities (Inspect Context)
+- `getAst(fileId)`: Get the full AST of a file.
+- `getSymbol(name, fileId)`: Look up an export symbol.
+- `getType(node)`: Get the inferred type of a node.
+- `getDependencies(fileId)`: Get a list of files imported by this file.
+- `getConfig()`: Access the current analysis configuration.
+- `readFile(filename)`: Read a file's content from the project root.
+- `readJson(filename)`: Read and parse a JSON file.
+
+### 2. Writing Abilities (Instruct Core)
+- `emitFinding(finding)`: Report a new issue (warning/error).
+- `markAsUsed(fileId, symbol?)`: Tell the core that a file or specific export is reachable.
+- `attachMetadata(node, key, value)`: Attach custom data to an AST node for later passes.
+
+### 3. Lifecycle Hooks
+- `onProjectInit`: Called once before any files are processed.
+- `onFileStart`: Called before processing a specific file.
+- `onASTNode`: Called for every node during AST traversal (Synchronous).
+- `onAnalysisComplete`: Called after all files and layers have finished.
+
+## Framework Support
+
+OptiPrune comes with built-in plugins for popular frameworks:
+- **React**: Automatically handles components and hooks.
+- **Next.js**: Recognizes conventional entry points (`page.tsx`, `route.ts`) and data fetching methods.
+- **Nuxt**: Handles directory-based routing and auto-import conventions.
 
 ## Best Practices
-
-- **Keep it Stateless**: Instructions should not store state between nodes.
-- **Fast Checks First**: Check the node type (e.g., `t.isIdentifier(node)`) before performing expensive logic.
-- **Use `@babel/types`**: Use the type guards provided by Babel for reliable node checking.
+- **Synchronous AST Access**: `onASTNode` must be synchronous to ensure high-performance traversal.
+- **Immutability**: Never mutate AST nodes directly. Use `attachMetadata` to store additional context.
+- **Resource Safety**: The adapter enforces boundaries to ensure plugins don't freeze the main analysis.

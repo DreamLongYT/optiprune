@@ -1,6 +1,6 @@
 # Architecture Layers
 
-Optiprune operates across 6 specialized layers to provide the most accurate dead-code analysis possible.
+Optiprune operates across 7 specialized layers to provide the most accurate dead-code analysis possible.
 
 ### Layer 1: Resilient Parser
 Handles syntax errors gracefully via Parse-Recovery. It converts source code into an AST even when the code is partially broken.
@@ -19,3 +19,9 @@ Protects framework-specific code. It understands decorators for **NestJS, TypeOR
 
 ### Layer 6: Dependency Auditor
 Audits `package.json` and lockfiles against actual code usage. It identifies unused NPM packages and ensures your project's physical dependencies match your imports.
+
+### Layer 7: Non-Standard Entry & Implicit Binding Engine
+Handles implicit dependencies that are invisible to standard static analyzers. It contains three sub-engines:
+- **DI Topology Engine**: Maps Dependency Injection tokens (NestJS, Inversify) to their providers.
+- **Contract Engine**: Matches event producers to consumers across event buses (RabbitMQ, Kafka, tRPC).
+- **Specifier Engine**: Resolves dynamic imports using template literals by bounded glob matching and SMT validation.

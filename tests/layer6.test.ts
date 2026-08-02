@@ -43,7 +43,7 @@ describe('Layer 6: Dependency & Boundary Engine', () => {
     
     expect(findings).toContainEqual(expect.objectContaining({
       rule: 'unused-export',
-      message: expect.stringContaining("Package 'unused-pkg' is declared in package.json but never imported")
+      message: expect.stringContaining("Package 'unused-pkg' is declared as a dependency in package.json but never imported or used in scripts.")
     }));
     
     expect(findings).not.toContainEqual(expect.objectContaining({

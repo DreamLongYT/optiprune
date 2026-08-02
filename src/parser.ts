@@ -343,7 +343,22 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
       } else {
         const parts = templateParts(argument);
         if (parts) {
-          addEdge(edges, file, `${parts.prefix}${"${…}"}${parts.suffix}`, "dynamic-pattern", node, ["*"]);
+          const edge: DependencyEdge = {
+            source: file,
+            rawSpecifier: `${parts.prefix}${"${…}"}${parts.suffix}`,
+            kind: "dynamic-pattern",
+            importedNames: ["*"],
+            resolution: "unknown",
+            dynamicPattern: {
+              prefix: parts.prefix,
+              suffix: parts.suffix,
+              baseDirectory: "", // Would need proper calculation
+              candidates: []
+            }
+          };
+          const location = positionRange(node);
+          if (location) edge.location = location;
+          edges.push(edge);
         } else {
           hasUnknownDynamicBoundary = true;
           addEdge(edges, file, "<unknown dynamic import>", "unknown-dynamic", node, ["*"]);

@@ -138,6 +138,8 @@ export interface AnalyzerOptions {
   failOn?: FailOn;
   json?: boolean;
   includeConventionalEntries?: boolean;
+  skip3?: boolean;
+  skip4?: boolean;
 }
 
 export type RuleSeverity = "error" | "warning" | "off";
@@ -156,6 +158,8 @@ export interface Config {
     smtTimeoutMs?: number;
     isolateMemoryLimitMb?: number;
     enableConcolicProof?: boolean;
+    skip3?: boolean;
+    skip4?: boolean;
   };
   rules?: Record<string, RuleSeverity>;
 }
@@ -177,6 +181,8 @@ export interface ResolvedOptions {
     smtTimeoutMs: number;
     isolateMemoryLimitMb: number;
     enableConcolicProof: boolean;
+    skip3: boolean;
+    skip4: boolean;
   };
   rules: Record<string, RuleSeverity>;
 }
@@ -241,16 +247,35 @@ export interface AnalysisContext {
   symbolicContracts?: Map<string, any>;
 }
 
-export interface PluginInstruction {
-  name: string;
-  description: string;
-  identifyUsage(node: any, module: ModuleRecord, context: AnalysisContext): string[];
+export interface PluginAdapter {
+  // Reading Abilities
+  getAst(fileId: string): any;
+  getSymbol(name: string, fileId: string): any;
+  getType(node: any): string | undefined;
+  getDependencies(fileId: string): string[];
+  getConfig(): ResolvedOptions;
+  readFile(filename: string): Promise<string | null>;
+  readJson(filename: string): Promise<any | null>;
+  
+  // Writing Abilities
+  emitFinding(finding: Omit<Finding, "rule">): void;
+  markAsUsed(fileId: string, symbol?: string): void;
+  attachMetadata(node: any, key: string, value: any): void;
+}
+
+export interface PluginLifecycle {
+  onProjectInit?(adapter: PluginAdapter): void | Promise<void>;
+  onFileStart?(fileId: string, adapter: PluginAdapter): void | Promise<void>;
+  onASTNode?(node: any, fileId: string, adapter: PluginAdapter): void;
+  onAnalysisComplete?(adapter: PluginAdapter): void | Promise<void>;
 }
 
 export interface AnalyzerPlugin {
   name: string;
-  instructions: PluginInstruction[];
-  analyze?(context: AnalysisContext): Finding[];
+  version: string;
+  enabled?: boolean; // Set by engine after detection
+  detect?(adapter: PluginAdapter): Promise<boolean>;
+  lifecycle: PluginLifecycle;
 }
 
 export const CONFIDENCE_RANK: Record<FailOn, number> = {

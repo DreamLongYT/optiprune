@@ -163,18 +163,58 @@ export async function analyzeLayer6(context: AnalysisContext): Promise<Finding[]
       const pkg = await readJsonFile<Record<string, any>>(manifestPath);
       if (!pkg) continue;
 
-      const declaredDeps = Object.keys(pkg.dependencies || {});
+      const dependencies = pkg.dependencies || {};
+      const devDependencies = pkg.devDependencies || {};
+      const scripts = pkg.scripts || {};
       const relativeManifest = path.posix.relative(projectRoot, manifestPath);
-      
-      for (const dep of declaredDeps) {
-        if (!importedPackages.has(dep)) {
+
+      // 1. Collect binary usages from scripts
+      const scriptUsages = new Set<string>();
+      for (const script of Object.values(scripts) as string[]) {
+        // Simple heuristic: first word in a script is often a binary
+        const binary = script.trim().split(/\s+/)[0];
+        if (binary) scriptUsages.add(binary);
+        
+        // Also check for common patterns like 'npx cmd' or 'yarn cmd'
+        const npxMatch = script.match(/npx\s+([@\w\-/]+)/);
+        if (npxMatch?.[1]) scriptUsages.add(npxMatch[1]);
+      }
+
+      // 2. Audit Dependencies
+      for (const dep of Object.keys(dependencies)) {
+        if (!importedPackages.has(dep) && !scriptUsages.has(dep)) {
           findings.push({
             rule: 'unused-export',
             severity: 'warning',
             confidence: 'high',
-            message: `Package '${dep}' is declared in ${relativeManifest} but never imported in /src.`,
+            message: `Package '${dep}' is declared as a dependency in ${relativeManifest} but never imported or used in scripts.`,
             file: relativeManifest,
-            evidence: { package: dep }
+            evidence: { package: dep, type: 'dependency' }
+          });
+        }
+      }
+
+      // 3. Audit DevDependencies
+      for (const dep of Object.keys(devDependencies)) {
+        // Special handling for @types/
+        if (dep.startsWith('@types/')) {
+          const basePkg = dep.slice(7).replace('__', '/');
+          if (importedPackages.has(basePkg) || dependencies[basePkg] || devDependencies[basePkg]) {
+            continue; 
+          }
+        }
+
+        // Check if it's a known config-heavy package or used in scripts
+        const isConfigPackage = ['eslint', 'prettier', 'vitest', 'jest', 'webpack', 'vite', 'rollup', 'postcss', 'tailwindcss', 'typescript'].some(p => dep.includes(p));
+        
+        if (!importedPackages.has(dep) && !scriptUsages.has(dep) && !isConfigPackage) {
+          findings.push({
+            rule: 'unused-export',
+            severity: 'info', // devDeps are usually less critical
+            confidence: 'medium',
+            message: `DevDependency '${dep}' in ${relativeManifest} appears unused.`,
+            file: relativeManifest,
+            evidence: { package: dep, type: 'devDependency' }
           });
         }
       }

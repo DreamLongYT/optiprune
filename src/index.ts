@@ -8,11 +8,13 @@ import { analyzeLayer3 } from "./layer3.js";
 import { analyzeLayer4 } from "./layer4.js";
 import { analyzeLayer5 } from "./layer5.js";
 import { analyzeLayer6 } from "./layer6.js";
+import { analyzeLayer7 } from "./layer7.js";
 import { SemanticGraph } from "./semantic-graph.js";
 import { TopologyManager } from "./topology-manager.js";
 import { SymbolicEngine } from "./symbolic-engine.js";
 import { buildMonorepoTopology } from "./workspace.js";
 import { PluginEngine, ZodPlugin } from "./engine.js";
+import { ReactPlugin, NextjsPlugin, NuxtPlugin } from "./framework-plugins.js";
 import { loadCache, saveCache, getFileHash, isCacheValid } from "./cache.js";
 import { formatTerminal, formatSarif } from "./reporters.js";
 import {
@@ -40,7 +42,7 @@ import type {
 } from "./types.js";
 import { CONFIDENCE_RANK } from "./types.js";
 
-const VERSION = "1.2.0-p1"; // Optiprune version
+const VERSION = "1.4.0"; // Optiprune version
 
 import { DEFAULT_CONFIG, loadConfig, mergeConfig } from "./config-loader.js";
 
@@ -53,6 +55,10 @@ async function resolveOptions(options: AnalyzerOptions): Promise<ResolvedOptions
     ...options,
     rootDir,
   } as import('./types.js').Config);
+
+  // Map top-level skip flags from CLI/Options to layers object
+  if (options.skip3 !== undefined) merged.layers.skip3 = options.skip3;
+  if (options.skip4 !== undefined) merged.layers.skip4 = options.skip4;
 
   const pathAliases = await ingestTsConfigPaths(rootDir);
 
@@ -203,7 +209,11 @@ let entryPoints = new Set<string>();
   // Gated Layer 2: Plugin-based Instruction Engine (Hardening)
   const pluginEngine = new PluginEngine();
   pluginEngine.register(ZodPlugin);
-  pluginEngine.runUsageInstructions(context);
+  pluginEngine.register(ReactPlugin);
+  pluginEngine.register(NextjsPlugin);
+  pluginEngine.register(NuxtPlugin);
+  const pluginFindings = await pluginEngine.run(context);
+  findings.push(...pluginFindings);
 
   // Headless Living Graph Engine: Initial Ingestion
   for (const module of modules.values()) {
@@ -341,14 +351,22 @@ let entryPoints = new Set<string>();
   findings.push(...layer2Findings);
 
   // Phase 2: Layer 3 (Conditional Z3 SMT)
-  const layer3Findings = await analyzeLayer3(context);
-  findings.push(...layer3Findings);
+  if (!resolvedOptions.layers.skip3) {
+    const layer3Findings = await analyzeLayer3(context);
+    findings.push(...layer3Findings);
+  }
   
   // Phase 3: Layer 4 (node:vm sandbox)
-  const layer4Findings = await analyzeLayer4(context);
-  findings.push(...layer4Findings);
+  if (!resolvedOptions.layers.skip4) {
+    const layer4Findings = await analyzeLayer4(context);
+    findings.push(...layer4Findings);
+  }
   
-  // Phase 4: Headless Living Graph Engine (Symbolic Evaluation)
+  // Phase 4: Layer 7 (Non-Standard Entry & Implicit Binding Engine)
+  const layer7Findings = await analyzeLayer7(context);
+  findings.push(...layer7Findings);
+
+  // Phase 5: Headless Living Graph Engine (Symbolic Evaluation)
   const symbolicFindings = await symbolicEngine.evaluateContracts(context);
   findings.push(...symbolicFindings);
 

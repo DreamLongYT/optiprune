@@ -22,6 +22,8 @@ program
   .option("--fail-on <confidence>", "Fail on findings with confidence level (high, medium, low, none)", "high")
   .option("--json", "Output results as JSON")
   .option("--sarif", "Output results in SARIF format")
+  .option("--skip-3", "Skip Layer 3 (SMT Constraint Solver)")
+  .option("--skip-4", "Skip Layer 4 (Concolic Execution Proofs)")
   .action(async (options) => {
     try {
       const analyzerOptions: AnalyzerOptions = {
@@ -33,6 +35,8 @@ program
         includeConventionalEntries: options.conventionalEntries,
         failOn: options.failOn,
         json: options.json || options.sarif,
+        skip3: options.skip3,
+        skip4: options.skip4,
       };
 
       const report = await analyze(analyzerOptions);
