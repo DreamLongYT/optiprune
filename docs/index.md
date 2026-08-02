@@ -14,7 +14,7 @@ hero:
       link: https://github.com/your-username/optiprune
 
 features:
-  - title: 6-Layer Analysis
+  - title: 7-Layer Analysis
     details: From simple parsing to complex Control Flow Graphs and Formal Logic.
   - title: Framework Aware
     details: Native support for NestJS, TypeORM, GraphQL, and more via Layer 5.

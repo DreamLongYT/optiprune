@@ -41,8 +41,8 @@ import type {
   ResolvedOptions,
 } from "./types.js";
 import { CONFIDENCE_RANK } from "./types.js";
-
-const VERSION = "1.4.0"; // Optiprune version
+const pkg = (await readJsonFile("package.json")) as { version?: string } | null;
+const VERSION = pkg?.version ?? "1.8.0";
 
 import { DEFAULT_CONFIG, loadConfig, mergeConfig } from "./config-loader.js";
 
@@ -202,7 +202,28 @@ let entryPoints = new Set<string>();
     });
   }
 
+  const publicEntryPoints = new Set<string>();
+  if (includeConventionalEntries) {
+    const rawPackageEntries = await discoverPackageEntryPatterns(rootDir);
+    const rootPackageEntries = rawPackageEntries.flatMap(entry => {
+      // If the entry points to dist/, also look for the corresponding src/ file
+      if (entry.startsWith('dist/')) {
+        const srcEntry = entry.replace('dist/', 'src/').replace(/\.js$/, '.ts').replace(/\.jsx$/, '.tsx');
+        return [entry, srcEntry];
+      }
+      return [entry];
+    });
+
+    // Include both package.json entries and conventional entries (index, main, cli, etc.)
+    for (const pattern of [...rootPackageEntries, ...conventionalEntryPatterns()]) {
+      for (const expanded of expandEntryPatterns(allSourceFiles, rootDir, [pattern])) {
+        publicEntryPoints.add(path.normalize(expanded));
+      }
+    }
+  }
+
   const context = contextWithGraph(modules, entryPoints, resolvedOptions);
+  (context as any).publicEntryPoints = publicEntryPoints;
   context.semanticGraph = semanticGraph;
   context.symbolicContracts = new Map();
 
@@ -252,6 +273,14 @@ let entryPoints = new Set<string>();
           // If it's an external contract (Layer 5/6), it's NEVER unused.
           if (exp.isExternalContract) continue;
 
+          // If the module is a public entry point (e.g. from package.json), its exports are part of the public API and should not be reported as unused.
+          if ((context as any).publicEntryPoints?.has(module.id)) continue;
+
+          // If the module is only "maybeReachable" (e.g. detected via dynamic discovery),
+          // or if we have a reachable unknown dynamic boundary (making any module potentially used),
+          // we protect its exports to avoid false-positives.
+          if (context.maybeReachable.has(module.id) || context.hasReachableUnknownDynamicBoundary) continue;
+
           const isExportUsed = context.usedExports.has(`${module.id}:${exp.exportedAs}`);
           
           // Refinement for Monorepo/Re-export chains:
@@ -263,9 +292,9 @@ let entryPoints = new Set<string>();
             if (usage && usage.reExportOnly) {
               const hasRealConsumer = Array.from(usage.consumers).some(c => {
                 const cUsage = importUsage.get(c);
-                // A consumer is "real" if it's NOT a re-export-only module
-                // OR if it's an entry point (which is always real)
-                return cUsage && (!cUsage.reExportOnly || context.entryPoints.has(c));
+                // A consumer is "real" if it's an entry point (always real)
+                // OR if it's NOT a re-export-only module.
+                return context.entryPoints.has(c) || (cUsage && !cUsage.reExportOnly);
               });
               if (!hasRealConsumer) {
                 isEffectivelyUsed = false;

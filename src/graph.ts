@@ -299,6 +299,39 @@ export function calculateReachability(
     }
   }
 
+  // Generic Dynamic Discovery:
+  // If a reachable module scans a directory (readdir) and also has dynamic import patterns,
+  // we assume it's a plugin loader and mark all files in that directory as maybe-reachable.
+  for (const module of modules.values()) {
+    if (reachable.has(module.id)) {
+      const hasDynamicPatterns = module.edges.some(e => e.kind === "dynamic-pattern" || e.kind === "unknown-dynamic");
+      const hasScannedDirs = module.scannedDirectories && module.scannedDirectories.length > 0;
+      
+      if (hasDynamicPatterns && (hasScannedDirs || module.hasUnknownDynamicBoundary)) {
+        if (hasScannedDirs) {
+          for (const dir of module.scannedDirectories) {
+            // Resolve the scanned directory relative to the module
+            const absoluteDir = path.resolve(path.dirname(module.id), dir);
+            for (const candidate of modules.keys()) {
+              if (!reachable.has(candidate) && !maybeReachable.has(candidate)) {
+                if (candidate.startsWith(absoluteDir)) {
+                  maybeReachable.add(candidate);
+                }
+              }
+            }
+          }
+        }
+        
+        // If we have an unknown dynamic boundary (like a variable readdir or unknown import),
+        // we must be conservative to ensure "World Peace" and not flag unreachable files
+        // that might be part of this dynamic system.
+        if (module.hasUnknownDynamicBoundary) {
+          hasReachableUnknownDynamicBoundary = true;
+        }
+      }
+    }
+  }
+
   if (hasReachableUnknownDynamicBoundary) {
     for (const moduleId of modules.keys()) {
       if (!reachable.has(moduleId)) {
@@ -408,10 +441,11 @@ export function contextWithGraph(
     options,
     modules,
     entryPoints,
-  reachable: graph.reachable,
-  maybeReachable: graph.maybeReachable,
-  components: graph.components,
-  usedExports: graph.usedExports,
-  candidateBranches: [],
-};
+    reachable: graph.reachable,
+    maybeReachable: graph.maybeReachable,
+    hasReachableUnknownDynamicBoundary: graph.hasReachableUnknownDynamicBoundary,
+    components: graph.components,
+    usedExports: graph.usedExports,
+    candidateBranches: [],
+  };
 }

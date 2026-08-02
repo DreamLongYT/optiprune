@@ -69,6 +69,7 @@ export interface ModuleRecord {
   edges: DependencyEdge[];
   hasUnknownDynamicBoundary: boolean;
   hasUnresolvedCommonJsExports: boolean;
+  scannedDirectories: string[];
 }
 
 export interface WorkspacePackage {
@@ -239,6 +240,7 @@ export interface AnalysisContext {
   entryPoints: Set<string>;
   reachable: Set<string>;
   maybeReachable: Set<string>;
+  hasReachableUnknownDynamicBoundary: boolean;
   components: StronglyConnectedComponent[];
   usedExports: Set<string>;
   candidateBranches: CandidateBranch[];

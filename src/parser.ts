@@ -176,11 +176,12 @@ function importSpecifierNames(specifiers: unknown[]): string[] {
   return names;
 }
 
-function exportSpecifierNames(specifiers: unknown[]): string[] {
+function exportSpecifierNames(specifiers: unknown[], useLocal: boolean = false): string[] {
   const names: string[] = [];
   for (const specifier of specifiers) {
     if (isNode(specifier)) {
-      names.push(propertyKeyName(specifier.exported) ?? "*");
+      const nameNode = useLocal ? (specifier.local || specifier.exported) : specifier.exported;
+      names.push(propertyKeyName(nameNode) ?? "*");
     }
   }
   return names;
@@ -269,6 +270,7 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
   });
   let hasUnknownDynamicBoundary = false;
   let hasUnresolvedCommonJsExports = false;
+  const scannedDirectories: string[] = [];
 
   walk(ast, (node) => {
     if (node.type === "ImportDeclaration") {
@@ -283,10 +285,13 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
     if (node.type === "ExportNamedDeclaration") {
       const specifier = nodeStringValue(node.source);
       if (specifier) {
-        const names = exportSpecifierNames(asArray(node.specifiers));
+        const exportedNames = exportSpecifierNames(asArray(node.specifiers), false);
+        const localNames = exportSpecifierNames(asArray(node.specifiers), true);
         const isTypeOnly = node.exportKind === "type";
-        addEdge(edges, file, specifier, "export-from", node, names, isTypeOnly);
-        for (const exportedName of names) {
+        // Edge should use local names (names from the source module)
+        addEdge(edges, file, specifier, "export-from", node, localNames, isTypeOnly);
+        // Exports should use exported names (names this module provides)
+        for (const exportedName of exportedNames) {
           addExport(exportsList, exportedName, node, undefined, { name: exportedName, isReExport: true, isTypeOnly: node.exportKind === "type" });
         }
       } else if (isNode(node.declaration)) {
@@ -337,11 +342,21 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
 
     if (isDynamicImportCall(node)) {
       const argument = dynamicArgument(node);
-      const literal = nodeStringValue(argument);
+      let literal = nodeStringValue(argument);
+      
+      // Handle pathToFileURL(path.join(...)).href
+      if (!literal && isNode(argument) && argument.type === "MemberExpression" && nodeIdentifierName(argument.property) === "href") {
+        const obj = argument.object;
+        if (isNode(obj) && obj.type === "CallExpression" && nodeIdentifierName(obj.callee) === "pathToFileURL") {
+          literal = nodeStringValue(asArray(obj.arguments)[0]);
+          // Even if it's still not a literal, templateParts might handle the inner call
+        }
+      }
+
       if (literal) {
         addEdge(edges, file, literal, "dynamic-literal", node, ["*"]);
       } else {
-        const parts = templateParts(argument);
+        const parts = templateParts(argument) || (isNode(argument) && argument.type === "CallExpression" && nodeIdentifierName(argument.callee) === "pathToFileURL" ? templateParts(asArray(argument.arguments)[0]) : undefined);
         if (parts) {
           const edge: DependencyEdge = {
             source: file,
@@ -365,6 +380,35 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
         }
       }
       return;
+    }
+
+    // Detect readdir / readdirSync with smarter path resolution
+    if (node.type === "CallExpression") {
+      const callee = node.callee as any;
+      const isReaddir = 
+        (callee.type === "Identifier" && (callee.name === "readdir" || callee.name === "readdirSync")) ||
+        (callee.type === "MemberExpression" && callee.property?.name === "readdir") ||
+        (callee.type === "MemberExpression" && callee.property?.name === "readdirSync");
+      
+      if (isReaddir) {
+        const arg = asArray(node.arguments)[0] as any;
+        let dir = nodeStringValue(arg);
+        
+        // Handle path.join(__dirname, 'plugins') or similar
+        if (!dir && arg?.type === "CallExpression" && arg.callee?.property?.name === "join") {
+          const joinArgs = asArray(arg.arguments);
+          const lastArg = joinArgs[joinArgs.length - 1];
+          dir = nodeStringValue(lastArg);
+        }
+
+        if (dir) {
+          scannedDirectories.push(dir);
+        } else {
+          // If we can't resolve the directory but it's a variable, 
+          // we mark it as a potential dynamic scan boundary.
+          hasUnknownDynamicBoundary = true;
+        }
+      }
     }
 
     if (node.type === "AssignmentExpression" && isNode(node.left) && node.left.type === "MemberExpression") {
@@ -399,6 +443,7 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
     edges,
     hasUnknownDynamicBoundary,
     hasUnresolvedCommonJsExports,
+    scannedDirectories,
   };
   return module;
 }
@@ -471,7 +516,7 @@ function fallbackModule(sourceText: string, file: string, reason: unknown): Modu
     parseStatus: "fallback",
     parseDiagnostics: [
       {
-        message,
+        message: "Module parse failed, using regex fallback.",
         file,
         recovered: false,
       },
@@ -479,8 +524,9 @@ function fallbackModule(sourceText: string, file: string, reason: unknown): Modu
     sourceText,
     exports: fallbackExports(sourceText, file),
     edges: fallbackEdges(sourceText, file),
-    hasUnknownDynamicBoundary: /\b(?:import|require)\s*\(\s*(?!["'`])/.test(sourceText),
-    hasUnresolvedCommonJsExports: /\bmodule\.exports\s*=|\bexports\s*\[/.test(sourceText),
+    hasUnknownDynamicBoundary: true,
+    hasUnresolvedCommonJsExports: true,
+    scannedDirectories: [],
   };
 }
 
