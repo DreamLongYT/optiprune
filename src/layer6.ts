@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'pathe';
 import { parseFile } from '@swc/core';
 import * as yaml from 'js-yaml';
+import { readJsonFile } from './fs-utils.js';
 import type { AnalysisContext, Finding, ModuleRecord } from './types.js';
 
 export interface DtsExportGraph {
@@ -27,7 +28,6 @@ export async function parseDtsWithSwc(entryPointRelative: string): Promise<DtsEx
     return { filePath: absolutePath, exportedTypes: new Set(), hasModuleAugmentation: false };
   }
 
-  // SWC parses TypeScript declarations directly with native performance
   const moduleAst = await parseFile(absolutePath, {
     syntax: 'typescript',
     dts: true,
@@ -37,7 +37,6 @@ export async function parseDtsWithSwc(entryPointRelative: string): Promise<DtsEx
   let hasModuleAugmentation = false;
 
   for (const item of (moduleAst as any).body as any[]) {
-    // 1. Capture exported interfaces/types/classes
     if (item.type === 'ExportDeclaration') {
       if (item.declaration && 'identifier' in item.declaration) {
         exportedTypes.add((item.declaration.identifier as any).value);
@@ -50,7 +49,6 @@ export async function parseDtsWithSwc(entryPointRelative: string): Promise<DtsEx
       }
     }
 
-    // 2. Track ambient module augmentations (e.g., declare module 'express')
     if (item.type === 'TsModuleDeclaration') {
       hasModuleAugmentation = true;
     }
@@ -74,7 +72,8 @@ export function buildLockfileGraph(projectRoot: string): Map<string, DependencyN
   if (fs.existsSync(packageLockPath)) {
     try {
       const raw = fs.readFileSync(packageLockPath, 'utf-8');
-      const parsed = JSON.parse(raw);
+      const cleanRaw = raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw;
+      const parsed = JSON.parse(cleanRaw);
       const packages = parsed.packages || {};
 
       for (const [pkgPath, meta] of Object.entries<any>(packages)) {
@@ -92,7 +91,7 @@ export function buildLockfileGraph(projectRoot: string): Map<string, DependencyN
         });
       }
     } catch (e) {
-      console.error(`[Layer 6] Error parsing package-lock.json: ${e}`);
+      // Ignore lockfile parse errors
     }
   } else if (fs.existsSync(pnpmLockPath)) {
     try {
@@ -101,7 +100,6 @@ export function buildLockfileGraph(projectRoot: string): Map<string, DependencyN
       const snapshots = parsed.snapshots || {};
 
       for (const [pkgId, meta] of Object.entries<any>(snapshots)) {
-        // pnpm lock v6/v9 format: /pkg-name@version
         const nameMatch = pkgId.match(/^\/(@?[^@]+)/);
         const cleanName = (nameMatch ? nameMatch[1] : pkgId) as string;
         
@@ -116,7 +114,7 @@ export function buildLockfileGraph(projectRoot: string): Map<string, DependencyN
         });
       }
     } catch (e) {
-      console.error(`[Layer 6] Error parsing pnpm-lock.yaml: ${e}`);
+      // Ignore lockfile parse errors
     }
   }
 
@@ -138,12 +136,10 @@ export async function analyzeLayer6(context: AnalysisContext): Promise<Finding[]
   for (const module of context.modules.values()) {
     for (const edge of module.edges) {
       if (edge.resolution === 'external') {
-        // Extract package name (e.g., '@scope/pkg/path' -> '@scope/pkg')
         const parts = edge.rawSpecifier.split('/');
         const pkgName = edge.rawSpecifier.startsWith('@') ? `${parts[0] ?? ''}/${parts[1] ?? ''}` : (parts[0] ?? '');
         importedPackages.add(pkgName);
       } else if (edge.resolution === 'resolved' && edge.target && context.options.monorepo) {
-        // Check if the target is inside a workspace package
         for (const [pkgName, pkg] of context.options.monorepo.packageMap.entries()) {
           if (edge.target.startsWith(pkg.location + '/') || edge.target === pkg.location) {
             importedPackages.add(pkgName);
@@ -164,40 +160,33 @@ export async function analyzeLayer6(context: AnalysisContext): Promise<Finding[]
 
   for (const manifestPath of manifestPaths) {
     if (fs.existsSync(manifestPath)) {
-      try {
-        const pkg = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
-        const declaredDeps = Object.keys(pkg.dependencies || {});
-        const relativeManifest = path.posix.relative(projectRoot, manifestPath);
-        
-        for (const dep of declaredDeps) {
-          if (!importedPackages.has(dep)) {
-            findings.push({
-              rule: 'unused-export',
-              severity: 'warning',
-              confidence: 'high',
-              message: `Package '${dep}' is declared in ${relativeManifest} but never imported in /src.`,
-              file: relativeManifest,
-              evidence: { package: dep }
-            });
-          }
+      const pkg = await readJsonFile<Record<string, any>>(manifestPath);
+      if (!pkg) continue;
+
+      const declaredDeps = Object.keys(pkg.dependencies || {});
+      const relativeManifest = path.posix.relative(projectRoot, manifestPath);
+      
+      for (const dep of declaredDeps) {
+        if (!importedPackages.has(dep)) {
+          findings.push({
+            rule: 'unused-export',
+            severity: 'warning',
+            confidence: 'high',
+            message: `Package '${dep}' is declared in ${relativeManifest} but never imported in /src.`,
+            file: relativeManifest,
+            evidence: { package: dep }
+          });
         }
-      } catch (e) {
-        console.error(`[Layer 6] Error auditing ${manifestPath}: ${e}`);
       }
     }
   }
 
   // 2. Refine Layer 5 Protection
-  // In a real scenario, we'd scan for framework registrations.
-  // For this implementation, we look for symbols in SCCs that are not reachable.
-  // If a Layer 5 protected symbol is in a module that is unreachable, we revoked it.
-  
   for (const module of context.modules.values()) {
     const isReachable = context.reachable.has(module.id) || context.maybeReachable.has(module.id);
     if (!isReachable) {
       for (const exp of module.exports) {
         if (exp.isExternalContract) {
-          // Revoke protection because the entire file is abandoned
           findings.push({
             rule: 'protected-contract',
             severity: 'info',

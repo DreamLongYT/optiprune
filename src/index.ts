@@ -99,7 +99,10 @@ export async function analyze(options: AnalyzerOptions): Promise<AnalysisReport>
   let hasFrameworkNodes = false;
 
   for (const file of allSourceFiles) {
-    const sourceText = await fs.readFile(file, "utf8");
+    // BOM-safe file reader to prevent Babel/TS AST parse recovery warnings
+    const rawText = await fs.readFile(file, "utf8");
+    const sourceText = rawText.charCodeAt(0) === 0xFEFF ? rawText.slice(1) : rawText;
+
     const currentHash = getFileHash(sourceText);
     
     let moduleRecord: ModuleRecord;

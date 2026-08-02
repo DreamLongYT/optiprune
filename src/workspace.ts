@@ -2,7 +2,7 @@ import path from 'pathe';
 import fs from 'node:fs';
 import fg from 'fast-glob';
 import * as yaml from 'js-yaml';
-import { normalizeAbsolute, normalizeCanonicalPath } from './fs-utils.js';
+import { normalizeAbsolute, normalizeCanonicalPath, readJsonFile } from './fs-utils.js';
 import type { WorkspacePackage, MonorepoGraph } from './types.js';
 
 /**
@@ -25,22 +25,20 @@ export async function buildMonorepoTopology(rootPath: string): Promise<MonorepoG
         packageGlobs.push(...doc.packages);
       }
     } catch (e) {
-      console.error(`[Workspace] Error parsing pnpm-workspace.yaml: ${e}`);
+      // Ignore parse warnings on malformed workspace configs
     }
   }
 
   // 2. Detect Yarn/NPM workspaces in package.json
   const rootPackageJsonPath = path.join(absoluteRoot, 'package.json');
   if (fs.existsSync(rootPackageJsonPath)) {
-    try {
-      const rootManifest = JSON.parse(fs.readFileSync(rootPackageJsonPath, 'utf-8'));
+    const rootManifest = await readJsonFile<Record<string, any>>(rootPackageJsonPath);
+    if (rootManifest) {
       if (Array.isArray(rootManifest.workspaces)) {
         packageGlobs.push(...rootManifest.workspaces);
       } else if (rootManifest.workspaces?.packages && Array.isArray(rootManifest.workspaces.packages)) {
         packageGlobs.push(...rootManifest.workspaces.packages);
       }
-    } catch (e) {
-      console.error(`[Workspace] Error parsing root package.json: ${e}`);
     }
   }
 
@@ -50,36 +48,31 @@ export async function buildMonorepoTopology(rootPath: string): Promise<MonorepoG
   }
 
   // 3. Find all package.json files matching the globs
-  // Use path.posix for globs as fast-glob expects forward slashes
   const manifestFiles = await fg(
     packageGlobs.map(g => path.posix.join(g, 'package.json')),
     { cwd: absoluteRoot, absolute: true, ignore: ['**/node_modules/**'] }
   );
 
   for (const manifestPath of manifestFiles) {
-    try {
-      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
-      const pkgName = manifest.name;
-      if (!pkgName) continue;
+    const manifest = await readJsonFile<Record<string, any>>(manifestPath);
+    if (!manifest || !manifest.name) continue;
 
-      const location = normalizeAbsolute(path.dirname(manifestPath));
-      const allDeps = new Set<string>([
-        ...Object.keys(manifest.dependencies || {}),
-        ...Object.keys(manifest.devDependencies || {}),
-        ...Object.keys(manifest.peerDependencies || {}),
-      ]);
+    const pkgName = manifest.name as string;
+    const location = normalizeAbsolute(path.dirname(manifestPath));
+    const allDeps = new Set<string>([
+      ...Object.keys(manifest.dependencies || {}),
+      ...Object.keys(manifest.devDependencies || {}),
+      ...Object.keys(manifest.peerDependencies || {}),
+    ]);
 
-      packageMap.set(pkgName, {
-        name: pkgName,
-        location,
-        relativePath: path.posix.relative(absoluteRoot, location),
-        manifestPath: normalizeAbsolute(manifestPath),
-        dependencies: new Set(), // Will be filled in next pass
-        allDependencies: allDeps,
-      });
-    } catch (e) {
-      console.error(`[Workspace] Error parsing package manifest at ${manifestPath}: ${e}`);
-    }
+    packageMap.set(pkgName, {
+      name: pkgName,
+      location,
+      relativePath: path.posix.relative(absoluteRoot, location),
+      manifestPath: normalizeAbsolute(manifestPath),
+      dependencies: new Set(),
+      allDependencies: allDeps,
+    });
   }
 
   // 4. Resolve internal workspace dependencies

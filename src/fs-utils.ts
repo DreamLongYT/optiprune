@@ -1,5 +1,13 @@
 import { promises as fs } from "node:fs";
-import path from "pathe";
+import {
+  normalize,
+  resolve,
+  dirname,
+  extname,
+  relative as patheRelative,
+  isAbsolute,
+  join,
+} from "pathe";
 
 const SOURCE_EXTENSION_ALIASES = new Map<string, string[]>([
   [".js", [".ts", ".tsx", ".js", ".jsx"]],
@@ -37,7 +45,7 @@ export function normalizeCanonicalPath(filePath: string): string {
   if (/^[a-z]:\//i.test(posixPath)) {
     posixPath = posixPath.charAt(0).toUpperCase() + posixPath.slice(1);
   }
-  const normalized = path.posix.normalize(posixPath);
+  const normalized = normalize(posixPath);
   return normalized.length > 1 && normalized.endsWith("/")
     ? normalized.slice(0, -1)
     : normalized;
@@ -48,14 +56,14 @@ export function toPosix(value: string): string {
 }
 
 export function normalizeAbsolute(value: string): string {
-  return normalizeCanonicalPath(path.resolve(value));
+  return normalizeCanonicalPath(resolve(value));
 }
 
 export function pathInside(parent: string, candidate: string): boolean {
   const p = normalizeCanonicalPath(parent);
   const c = normalizeCanonicalPath(candidate);
-  const relative = path.posix.relative(p, c);
-  return relative === "" || (!relative.startsWith("..") && !path.posix.isAbsolute(relative));
+  const relPath = patheRelative(p, c);
+  return relPath === "" || (!relPath.startsWith("..") && !isAbsolute(relPath));
 }
 
 function escapeRegex(value: string): string {
@@ -133,15 +141,15 @@ export async function discoverSourceFiles(
     }
 
     for (const entry of entries) {
-      const absolute = path.join(currentDirectory, entry.name.toString());
-      const relative = toPosix(path.posix.relative(normalizedRoot, normalizeAbsolute(absolute)));
-      const probe = entry.isDirectory() ? `${relative}/` : relative;
+      const absolute = join(currentDirectory, entry.name.toString());
+      const relPath = toPosix(patheRelative(normalizedRoot, normalizeAbsolute(absolute)));
+      const probe = entry.isDirectory() ? `${relPath}/` : relPath;
       if (matchesAnyGlob(probe, compiledIgnorePatterns)) {
         continue;
       }
       if (entry.isDirectory()) {
         await walk(absolute);
-      } else if (entry.isFile() && extensions.includes(path.extname(entry.name.toString()))) {
+      } else if (entry.isFile() && extensions.includes(extname(entry.name.toString()))) {
         discovered.push(normalizeAbsolute(absolute));
       }
     }
@@ -161,7 +169,7 @@ export function removeQueryAndHash(specifier: string): string {
 
 /**
  * Resolves an import specifier against a set of known files.
- * INCLUDES MANUS FEATURE: Handles .js -> .ts / .tsx extension mapping!
+ * Handles .js -> .ts / .tsx extension mapping.
  */
 export function resolveLocalSpecifier(
   sourceFilePath: string,
@@ -174,9 +182,9 @@ export function resolveLocalSpecifier(
     return undefined;
   }
 
-  const sourceDir = path.posix.dirname(normalizeCanonicalPath(sourceFilePath));
+  const sourceDir = dirname(normalizeCanonicalPath(sourceFilePath));
   const absoluteBasePath = normalizeCanonicalPath(
-    path.posix.resolve(sourceDir, cleaned)
+    resolve(sourceDir, cleaned)
   );
 
   const existsInKnown = (p: string) =>
@@ -187,8 +195,8 @@ export function resolveLocalSpecifier(
     return absoluteBasePath;
   }
 
-  // Strategy B (MANUS FEATURE): Try extension aliases (.js -> .ts/.tsx)
-  const baseExtension = path.posix.extname(absoluteBasePath);
+  // Strategy B: Try extension aliases (.js -> .ts/.tsx)
+  const baseExtension = extname(absoluteBasePath);
   if (baseExtension) {
     const aliases = SOURCE_EXTENSION_ALIASES.get(baseExtension);
     if (aliases) {
@@ -224,10 +232,10 @@ function candidateSpecifiers(fromFile: string, candidate: string): string[] {
   const from = normalizeCanonicalPath(fromFile);
   const target = normalizeCanonicalPath(candidate);
   
-  const relative = path.posix.relative(path.posix.dirname(from), target);
-  const withPrefix = relative.startsWith(".") ? relative : `./${relative}`;
+  const relPath = patheRelative(dirname(from), target);
+  const withPrefix = relPath.startsWith(".") ? relPath : `./${relPath}`;
   
-  const extension = path.posix.extname(withPrefix);
+  const extension = extname(withPrefix);
   const withoutExtension = extension ? withPrefix.slice(0, -extension.length) : withPrefix;
   const aliases = extension ? SOURCE_EXTENSION_ALIASES.get(extension) ?? [extension] : [""];
   const mapped = aliases.map((alias) => `${withoutExtension}${alias}`);
@@ -263,21 +271,21 @@ export function expandEntryPatterns(
   const normalizedRoot = normalizeAbsolute(rootDir);
   
   for (const pattern of patterns) {
-    const direct = normalizeAbsolute(path.resolve(rootDir, pattern));
+    const direct = normalizeAbsolute(resolve(rootDir, pattern));
     if (sourceFiles.includes(direct)) {
       matches.add(direct);
       continue;
     }
     
     let p = toPosix(pattern).replace(/^\.\//, "");
-    if (path.posix.isAbsolute(p)) {
-      p = path.posix.relative(normalizedRoot, p);
+    if (isAbsolute(p)) {
+      p = patheRelative(normalizedRoot, p);
     }
     
     const matcher = globToRegExp(p);
     for (const sourceFile of sourceFiles) {
-      const relative = path.posix.relative(normalizedRoot, sourceFile);
-      if (matcher.test(relative)) {
+      const relPath = patheRelative(normalizedRoot, sourceFile);
+      if (matcher.test(relPath)) {
         matches.add(sourceFile);
       }
     }
@@ -286,17 +294,16 @@ export function expandEntryPatterns(
 }
 
 export async function discoverPackageEntryPatterns(rootDir: string): Promise<string[]> {
-  const packageFile = path.join(rootDir, "package.json");
+  const packageFile = join(rootDir, "package.json");
   try {
-    const parsed: unknown = JSON.parse(await fs.readFile(packageFile, "utf8"));
-    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    const packageJson = await readJsonFile<Record<string, unknown>>(packageFile);
+    if (!packageJson || typeof packageJson !== "object" || Array.isArray(packageJson)) {
       return [];
     }
-    const packageJson = parsed as Record<string, unknown>;
     const entries = new Set<string>();
     for (const field of ["main", "module", "browser", "types", "typings"]) {
       if (typeof packageJson[field] === "string") {
-        entries.add(packageJson[field]);
+        entries.add(packageJson[field] as string);
       }
     }
     collectPackageExportStrings(packageJson.exports, entries);
@@ -354,7 +361,25 @@ export function normalizedConventionalEntryPatterns(): string[] {
 
 export async function readJsonFile<T>(candidate: string): Promise<T | undefined> {
   try {
-    return JSON.parse(await fs.readFile(candidate, "utf8")) as T;
+    let rawContent = await fs.readFile(candidate, "utf8");
+    
+    // Strip UTF-8 BOM
+    if (rawContent.charCodeAt(0) === 0xFEFF) {
+      rawContent = rawContent.slice(1);
+    }
+
+    rawContent = rawContent.trim();
+
+    try {
+      return JSON.parse(rawContent) as T;
+    } catch {
+      // Fallback for literal escaped strings in synthetic test fixtures
+      const sanitized = rawContent
+        .replace(/\\n/g, "\n")
+        .replace(/\\r/g, "\r")
+        .replace(/\\t/g, "\t");
+      return JSON.parse(sanitized) as T;
+    }
   } catch {
     return undefined;
   }
@@ -363,11 +388,11 @@ export async function readJsonFile<T>(candidate: string): Promise<T | undefined>
 export async function findNearestConfig(startDirectory: string): Promise<string | undefined> {
   let current = normalizeAbsolute(startDirectory);
   while (true) {
-    const candidate = path.join(current, "deadcode-sentinel.config.json");
+    const candidate = join(current, "deadcode-sentinel.config.json");
     if (await fileExists(candidate)) {
       return candidate;
     }
-    const parent = path.posix.dirname(current);
+    const parent = dirname(current);
     if (parent === current) {
       return undefined;
     }
@@ -376,26 +401,32 @@ export async function findNearestConfig(startDirectory: string): Promise<string 
 }
 
 export function relativeDisplayPath(rootDir: string, candidate: string): string {
-  const relative = path.posix.relative(normalizeAbsolute(rootDir), normalizeAbsolute(candidate));
-  return relative || ".";
+  const relPath = patheRelative(normalizeAbsolute(rootDir), normalizeAbsolute(candidate));
+  return relPath || ".";
 }
 
-// RESTORED FIX: Accepts directories as valid roots even if they don't contain package.json
 export async function rootLooksValid(rootDir: string): Promise<boolean> {
   return directoryExists(rootDir);
 }
 
 export async function ingestTsConfigPaths(rootDir: string): Promise<Map<string, string[]>> {
   const pathAliases = new Map<string, string[]>();
-  const tsconfigPath = path.join(rootDir, 'tsconfig.json');
-  try {
-    const tsconfig = JSON.parse(await fs.readFile(tsconfigPath, 'utf8'));
-    const paths = tsconfig.compilerOptions?.paths;
-    if (paths) {
-      for (const [alias, targets] of Object.entries(paths)) {
-        pathAliases.set(alias, targets as string[]);
+  const tsconfigPath = join(rootDir, "tsconfig.json");
+
+  const tsconfig = await readJsonFile<{
+    compilerOptions?: {
+      paths?: Record<string, string[]>;
+    };
+  }>(tsconfigPath);
+
+  const paths = tsconfig?.compilerOptions?.paths;
+  if (paths && typeof paths === "object") {
+    for (const [alias, targets] of Object.entries(paths)) {
+      if (Array.isArray(targets)) {
+        pathAliases.set(alias, targets);
       }
     }
-  } catch (e) {}
+  }
+
   return pathAliases;
 }
