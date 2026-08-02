@@ -3,6 +3,7 @@ import traverse from "@babel/traverse";
 import * as t from "@babel/types";
 import fs from "node:fs/promises";
 import path from "pathe";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 export class PluginEngine {
   private plugins: AnalyzerPlugin[] = [];
@@ -12,53 +13,120 @@ export class PluginEngine {
     this.plugins.push(plugin);
   }
 
+  /**
+   * Dynamically loads all plugins from the src/plugins directory.
+   * Handles errors gracefully to ensure the core analysis continues.
+   */
+  async loadDynamicPlugins() {
+    try {
+      const __dirname = path.dirname(fileURLToPath(import.meta.url));
+      const pluginsDir = path.join(__dirname, "plugins");
+      
+      let files: string[] = [];
+      try {
+        files = await fs.readdir(pluginsDir);
+      } catch (e) {
+        // Directory might not exist or be inaccessible
+        return;
+      }
+
+      for (const file of files) {
+        if ((file.endsWith(".ts") || file.endsWith(".js")) && !file.endsWith(".d.ts")) {
+          try {
+            const pluginPath = pathToFileURL(path.join(pluginsDir, file)).href;
+            const module = await import(pluginPath);
+            const keys = Object.keys(module);
+            const firstKey = keys[0];
+            const plugin = module.default || (firstKey ? (module as any)[firstKey] : null);
+            
+            if (plugin && typeof plugin === "object" && plugin.name && plugin.lifecycle) {
+              this.register(plugin);
+            }
+          } catch (err) {
+            console.warn(`[Plugin Engine] Failed to load plugin ${file}: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(`[Plugin Engine] Error during dynamic plugin loading: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   async run(context: AnalysisContext): Promise<Finding[]> {
     const adapter = this.createAdapter(context);
 
+    // 0. Dynamic Loading
+    await this.loadDynamicPlugins();
+
     // 1. Detection Phase
     for (const plugin of this.plugins) {
-      if (plugin.detect) {
-        plugin.enabled = await plugin.detect(adapter);
-      } else {
-        plugin.enabled = true; // Enabled by default if no detect method
+      try {
+        if (plugin.detect) {
+          plugin.enabled = await plugin.detect(adapter);
+        } else {
+          plugin.enabled = true; // Enabled by default if no detect method
+        }
+      } catch (err) {
+        console.error(`[Plugin Engine] Error in detect phase for ${plugin.name}:`, err);
+        plugin.enabled = false;
       }
     }
 
     // 2. onProjectInit
     for (const plugin of this.plugins) {
       if (plugin.enabled && plugin.lifecycle.onProjectInit) {
-        await plugin.lifecycle.onProjectInit(adapter);
+        try {
+          await plugin.lifecycle.onProjectInit(adapter);
+        } catch (err) {
+          console.error(`[Plugin Engine] Error in onProjectInit for ${plugin.name}:`, err);
+        }
       }
     }
 
-    // 2. File-level processing
+    // 3. File-level processing
     for (const module of context.modules.values()) {
       if (!module.ast) continue;
 
       // onFileStart
       for (const plugin of this.plugins) {
         if (plugin.enabled && plugin.lifecycle.onFileStart) {
-          await plugin.lifecycle.onFileStart(module.id, adapter);
+          try {
+            await plugin.lifecycle.onFileStart(module.id, adapter);
+          } catch (err) {
+            console.error(`[Plugin Engine] Error in onFileStart for ${plugin.name} on ${module.id}:`, err);
+          }
         }
       }
 
       // onASTNode (Traversal)
       const traverseFn = (traverse as any).default || traverse;
-      traverseFn(module.ast, {
-        enter: (path: any) => {
-          for (const plugin of this.plugins) {
-            if (plugin.enabled && plugin.lifecycle.onASTNode) {
-              plugin.lifecycle.onASTNode(path.node, module.id, adapter);
+      try {
+        traverseFn(module.ast, {
+          enter: (path: any) => {
+            for (const plugin of this.plugins) {
+              if (plugin.enabled && plugin.lifecycle.onASTNode) {
+                try {
+                  plugin.lifecycle.onASTNode(path.node, module.id, adapter);
+                } catch (err) {
+                  // Suppress per-node errors to avoid flooding logs, but ensure isolation
+                }
+              }
             }
           }
-        }
-      });
+        });
+      } catch (err) {
+        console.error(`[Plugin Engine] Error during AST traversal for ${module.id}:`, err);
+      }
     }
 
     // 4. onAnalysisComplete
     for (const plugin of this.plugins) {
       if (plugin.enabled && plugin.lifecycle.onAnalysisComplete) {
-        await plugin.lifecycle.onAnalysisComplete(adapter);
+        try {
+          await plugin.lifecycle.onAnalysisComplete(adapter);
+        } catch (err) {
+          console.error(`[Plugin Engine] Error in onAnalysisComplete for ${plugin.name}:`, err);
+        }
       }
     }
 
