@@ -283,6 +283,7 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
   const getActiveDeclaration = (s: AstNode[]) => {
     for (let i = s.length - 1; i >= 0; i--) {
       const n = s[i];
+      if (!n) continue;
       if (n.type === "FunctionDeclaration" || n.type === "ClassDeclaration" || n.type === "TSInterfaceDeclaration" || n.type === "TSTypeAliasDeclaration" || n.type === "TSEnumDeclaration") {
         return nodeIdentifierName(n.id);
       }
