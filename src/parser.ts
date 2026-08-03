@@ -304,7 +304,15 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
       } else if (isNode(node.declaration)) {
         const declaration = node.declaration;
         if ((declaration.type === "FunctionDeclaration" || declaration.type === "ClassDeclaration" || declaration.type === "TSInterfaceDeclaration" || declaration.type === "TSTypeAliasDeclaration" || declaration.type === "TSEnumDeclaration") && nodeIdentifierName(declaration.id)) {
-          const isType = declaration.type === "TSInterfaceDeclaration" || declaration.type === "TSTypeAliasDeclaration" || node.exportKind === "type";
+          // TSInterfaceDeclaration and TSTypeAliasDeclaration are pure type constructs erased
+          // at compile time.
+          // TSEnumDeclaration: 'const enum' is erased/inlined, but regular 'enum' emits a
+          // runtime IIFE object. We only mark it as type-only if it's a 'const enum'.
+          const isType =
+            declaration.type === "TSInterfaceDeclaration" ||
+            declaration.type === "TSTypeAliasDeclaration" ||
+            (declaration.type === "TSEnumDeclaration" && (declaration as any).const === true) ||
+            node.exportKind === "type";
           addExport(exportsList, nodeIdentifierName(declaration.id) ?? "unknown", node, declaration.id as AstNode, { isTypeOnly: isType });
         } else if (declaration.type === "VariableDeclaration") {
           for (const declarator of asArray(declaration.declarations)) {

@@ -358,13 +358,17 @@ function resolveAndMarkTarget(specifier: string, sourceFile: string, context: An
   }
 
   if (targetModule) {
-    console.log(`[Layer 4] Marking reachable: ${targetModule.id}`);
+    if (context.options.verbose) {
+      console.log(`[Layer 4] Marking reachable: ${targetModule.id}`);
+    }
     context.reachable.add(targetModule.id);
     for (const exp of targetModule.exports) {
       context.usedExports.add(`${targetModule.id}:${exp.exportedAs}`);
     }
   } else {
-    console.log(`[Layer 4] Could not resolve target: ${absolutePath}`);
+    if (context.options.verbose) {
+      console.log(`[Layer 4] Could not resolve target: ${absolutePath}`);
+    }
   }
 }
 

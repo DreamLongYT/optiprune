@@ -21,11 +21,7 @@ describe('Dynamic Import Analysis Reproduction', () => {
       f.rule === 'unused-export' && f.file.includes('angular-plugin.ts')
     );
 
-    if (unusedAngular) {
-      console.log('❌ FAIL: AngularPlugin was incorrectly flagged as unused even with Layer 4 enabled.');
-    } else {
-      console.log('✅ SUCCESS: Layer 4 simulation correctly identified AngularPlugin as used.');
-    }
+
     
     expect(unusedAngular, 'AngularPlugin should be recognized as used when Layer 4 is active').toBeUndefined();
 
@@ -33,11 +29,7 @@ describe('Dynamic Import Analysis Reproduction', () => {
       f.rule === 'unknown-dynamic-import' && f.file.includes('engine.ts')
     );
     
-    if (unknownDynamic) {
-      console.log('❌ FAIL: engine.ts still has unknown-dynamic-import warning even though it was resolved.');
-    } else {
-      console.log('✅ SUCCESS: unknown-dynamic-import warning was correctly removed after resolution.');
-    }
+
     
     expect(unknownDynamic, 'Warning should be removed after successful Layer 4 resolution').toBeUndefined();
   });
@@ -55,11 +47,7 @@ describe('Dynamic Import Analysis Reproduction', () => {
       f.rule === 'unused-export' && f.file.includes('angular-plugin.ts')
     );
 
-    if (unusedAngular) {
-      console.log('✅ SUCCESS: Baseline confirmed. Without Layer 4, the plugin is (correctly) flagged as unused.');
-    } else {
-      console.log('❌ FAIL: The plugin should have been flagged as unused without simulation.');
-    }
+
     
     expect(unusedAngular, 'Without Layer 4, the analyzer should not be able to find the dynamic import target').toBeDefined();
   });

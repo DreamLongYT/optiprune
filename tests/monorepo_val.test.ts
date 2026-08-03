@@ -11,17 +11,14 @@ describe("Monorepo Validation", () => {
       includeConventionalEntries: false,
     });
 
-    const findings = report.findings.map(f => (`[${f.rule}] ${f.file} (${f.evidence.exportName || ''})`));
-    console.log("Findings:", findings);
+    // const findings = report.findings.map(f => (`[${f.rule}] ${f.file} (${f.evidence.exportName || ''})`));
     
     // Button should be reachable, Unused should be unused-export
     const unusedExport = report.findings.find(f => 
         f.rule === "unused-export" && (f.file.includes("Unused") || f.evidence.exportName === "Unused")
     );
     
-    if (!unusedExport) {
-      console.log("All Findings:", report.findings);
-    }
+
     expect(unusedExport).toBeUndefined(); // Optiprune should not report wildcard exports as unused by default
     
     // Button should NOT be in findings

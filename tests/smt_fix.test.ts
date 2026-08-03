@@ -14,12 +14,7 @@ describe("Layer 3: SMT Fixes", () => {
       includeConventionalEntries: false,
     });
 
-    const smtFindings = report.findings.filter((f) => f.message.includes("[SMT]"));
-    
-    console.log("SMT Findings found:", smtFindings.length);
-    for (const f of smtFindings) {
-        console.log(`- ${f.message} at line ${f.location?.start.line}`);
-    }
+    const smtFindings = report.findings.filter((f) => f.rule === "constant-condition");
 
     // We expect findings for:
     // 1. a > 20 && a < 5

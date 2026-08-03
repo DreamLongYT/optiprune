@@ -14,7 +14,7 @@ describe("Layer 3: SMT Constraint Solver", () => {
       includeConventionalEntries: false,
     });
 
-    const smtFindings = report.findings.filter((f) => f.message.includes("[SMT]"));
+    const smtFindings = report.findings.filter((f) => f.rule === "constant-condition");
     
     // 1. x > 10 && x < 5
     // 2. age < 0 && age > 150
