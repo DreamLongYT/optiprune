@@ -278,8 +278,45 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
   let hasUnresolvedCommonJsExports = false;
   const scannedDirectories: string[] = [];
   const dynamicImportCandidates: DynamicImportCandidate[] = [];
+  const localSymbolDeps = new Map<string, Set<string>>();
+
+  const getActiveDeclaration = (s: AstNode[]) => {
+    for (let i = s.length - 1; i >= 0; i--) {
+      const n = s[i];
+      if (n.type === "FunctionDeclaration" || n.type === "ClassDeclaration" || n.type === "TSInterfaceDeclaration" || n.type === "TSTypeAliasDeclaration" || n.type === "TSEnumDeclaration") {
+        return nodeIdentifierName(n.id);
+      }
+      if (n.type === "VariableDeclarator") {
+        const names = bindingNames(n.id);
+        return names[0];
+      }
+    }
+    return undefined;
+  };
 
   walk(ast, (node, stack) => {
+    // Fix 3: Track local references
+    if (node.type === "Identifier") {
+      const parent = stack[stack.length - 1];
+      if (parent) {
+        let isRef = true;
+        if ((parent.type === "FunctionDeclaration" || parent.type === "ClassDeclaration" || parent.type === "TSInterfaceDeclaration" || parent.type === "TSTypeAliasDeclaration" || parent.type === "TSEnumDeclaration" || parent.type === "VariableDeclarator") && parent.id === node) isRef = false;
+        if (parent.type === "MemberExpression" && parent.property === node && !parent.computed) isRef = false;
+        if (parent.type === "ObjectProperty" && parent.key === node && !parent.computed) isRef = false;
+        if (parent.type === "TSPropertySignature" && parent.key === node) isRef = false;
+        if (parent.type === "TSMethodSignature" && parent.key === node) isRef = false;
+        if (parent.type === "ImportSpecifier" || parent.type === "ImportDefaultSpecifier" || parent.type === "ImportNamespaceSpecifier") isRef = false;
+
+        if (isRef) {
+          const active = getActiveDeclaration(stack);
+          if (active && active !== node.name) {
+            if (!localSymbolDeps.has(active)) localSymbolDeps.set(active, new Set());
+            localSymbolDeps.get(active)!.add(node.name as string);
+          }
+        }
+      }
+    }
+
     if (node.type === "ImportDeclaration") {
       const specifier = nodeStringValue(node.source);
       if (specifier) {
@@ -447,29 +484,44 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
       return;
     }
 
-    // Detect readdir / readdirSync with smarter path resolution
+    // Detect readdir / readdirSync / fs.promises.readdir with smarter path resolution
     if (node.type === "CallExpression") {
       const callee = node.callee as any;
-      const isReaddir = 
+      // Match: readdir(...), readdirSync(...), fs.readdir(...), fs.readdirSync(...),
+      //        fs.promises.readdir(...), promises.readdir(...)
+      const isReaddir =
         (callee.type === "Identifier" && (callee.name === "readdir" || callee.name === "readdirSync")) ||
-        (callee.type === "MemberExpression" && callee.property?.name === "readdir") ||
-        (callee.type === "MemberExpression" && callee.property?.name === "readdirSync");
-      
+        (callee.type === "MemberExpression" && (callee.property?.name === "readdir" || callee.property?.name === "readdirSync")) ||
+        // fs.promises.readdir
+        (callee.type === "MemberExpression" &&
+          isNode(callee.object) &&
+          callee.object.type === "MemberExpression" &&
+          (callee.property?.name === "readdir" || callee.property?.name === "readdirSync"));
+
       if (isReaddir) {
         const arg = asArray(node.arguments)[0] as any;
         let dir = nodeStringValue(arg);
-        
-        // Handle path.join(__dirname, 'plugins') or similar
-        if (!dir && arg?.type === "CallExpression" && arg.callee?.property?.name === "join") {
-          const joinArgs = asArray(arg.arguments);
-          const lastArg = joinArgs[joinArgs.length - 1];
-          dir = nodeStringValue(lastArg);
+
+        // Handle path.join(__dirname, 'plugins') or path.resolve(..., 'dir') or similar
+        if (!dir && arg?.type === "CallExpression") {
+          const methodName = arg.callee?.property?.name ?? arg.callee?.name;
+          if (methodName === "join" || methodName === "resolve") {
+            const joinArgs = asArray(arg.arguments);
+            // Collect all string literal segments (skip __dirname / __filename / variables)
+            const stringParts = joinArgs
+              .map((a: unknown) => nodeStringValue(a))
+              .filter((s): s is string => s !== undefined && !s.startsWith("/"));
+            if (stringParts.length > 0) {
+              // Use the relative sub-path formed by the string literals
+              dir = stringParts.join("/");
+            }
+          }
         }
 
         if (dir) {
           scannedDirectories.push(dir);
         } else {
-          // If we can't resolve the directory but it's a variable, 
+          // If we can't resolve the directory but it's a variable,
           // we mark it as a potential dynamic scan boundary.
           hasUnknownDynamicBoundary = true;
         }
@@ -497,6 +549,19 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
     }
   });
 
+  // Attach local references to exports
+  for (const exp of exportsList) {
+    const deps = localSymbolDeps.get(exp.name);
+    if (deps) {
+      exp.localReferences = Array.from(deps);
+    }
+  }
+
+  const localSymbolMap: Record<string, string[]> = {};
+  for (const [name, deps] of localSymbolDeps.entries()) {
+    localSymbolMap[name] = Array.from(deps);
+  }
+
   const module: ModuleRecord = {
     id: file,
     relativePath: file,
@@ -511,6 +576,7 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
     hasUnresolvedCommonJsExports,
     scannedDirectories,
     dynamicImportCandidates,
+    localSymbolMap,
   };
   return module;
 }

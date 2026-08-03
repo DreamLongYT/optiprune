@@ -37,6 +37,7 @@ export interface ExportRecord {
   isWildcard: boolean;
   isTypeOnly?: boolean;
   isExternalContract?: boolean; // Added for Layer 5: Schema Alignment
+  localReferences?: string[]; // Added for Fix 3: Symbol Propagation
 }
 
 export interface DependencyEdge {
@@ -73,6 +74,7 @@ export interface ModuleRecord {
   hasUnresolvedCommonJsExports: boolean;
   scannedDirectories: string[];
   dynamicImportCandidates: DynamicImportCandidate[];
+  localSymbolMap?: Record<string, string[]>; // Added for Fix 3: Internal symbol dependencies
 }
 
 export interface WorkspacePackage {

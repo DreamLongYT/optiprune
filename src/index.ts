@@ -371,11 +371,9 @@ let entryPoints = new Set<string>();
             }
           }
 
-          // Type-only exports (interfaces, type aliases, enums declared with `export type`)
-          // are erased by the TypeScript compiler at runtime. They cannot cause runtime
-          // breakage if unused, and tracking their consumers through type-checking is
-          // outside the scope of a graph-based analyser. Skip them to avoid false positives.
-          if (exp.isTypeOnly) continue;
+          // Fix 3: We now track local references to types, so we can safely report 
+          // unused type-only exports if they are truly not referenced anywhere.
+          // (Previously skipped to avoid false positives).
 
           if (!isEffectivelyUsed && exp.exportedAs !== "default") {
             findings.push({

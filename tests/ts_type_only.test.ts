@@ -1,24 +1,10 @@
 /**
- * Regression tests: TypeScript type-only exports must NOT be reported as unused-export.
- *
- * Background
- * ----------
- * TypeScript interfaces, type aliases, and enums (as well as any export annotated
- * with the `export type` keyword) are erased by the compiler before the JavaScript
- * runtime ever sees them.  A graph-based analyser like OptiPrune cannot reliably
- * track *type-level* consumers across files, so reporting these as "unused" produces
- * false positives that confuse users and erode trust in the tool.
- *
- * What is tested
- * --------------
- * 1. `interface` declarations exported without `export type` are NOT flagged.
- * 2. `type` alias declarations are NOT flagged.
- * 3. `enum` declarations are NOT flagged (they are TS-specific; treated as type-only
- *    in the graph layer even though they emit an IIFE at runtime).
- * 4. Explicit `export type { … }` re-exports are NOT flagged.
- * 5. A regular *value* export that is genuinely unused IS still flagged (sanity check
- *    that the guard does not accidentally suppress all findings).
- * 6. Parser unit: `isTypeOnly` is set correctly on each construct.
+ * Regression tests: TypeScript type-only exports are now reported if truly unused.
+ * 
+ * Fix 3 Update:
+ * Previously, all type-only exports were unconditionally skipped to avoid false positives
+ * because local references were not tracked. Now that we track local references,
+ * we can safely report unused types.
  */
 
 import { describe, it, expect } from "vitest";
@@ -31,9 +17,6 @@ import { parseModule } from "../src/parser.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// ---------------------------------------------------------------------------
-// Helper: create a temporary directory with in-memory files
-// ---------------------------------------------------------------------------
 async function withTempDir(
   files: Record<string, string>,
   fn: (dir: string) => Promise<void>,
@@ -51,9 +34,6 @@ async function withTempDir(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Parser-level unit tests
-// ---------------------------------------------------------------------------
 describe("Parser: isTypeOnly flag", () => {
   it("marks TSInterfaceDeclaration exports as isTypeOnly", () => {
     const src = `export interface Foo { bar: string; }`;
@@ -123,11 +103,8 @@ describe("Parser: isTypeOnly flag", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Analyser-level integration tests (end-to-end via analyze())
-// ---------------------------------------------------------------------------
-describe("Analyser: TypeScript type-only exports do not produce unused-export findings", () => {
-  it("does not flag an unused interface as unused-export", async () => {
+describe("Analyser: TypeScript type-only exports (Fix 3 Precision)", () => {
+  it("DOES flag an unused interface as unused-export", async () => {
     await withTempDir(
       {
         "entry.ts": `import './types.js'; export const x = 1;`,
@@ -146,12 +123,12 @@ describe("Analyser: TypeScript type-only exports do not produce unused-export fi
         const typeFindings = report.findings.filter(
           (f) => f.rule === "unused-export" && f.evidence.exportName === "CacheEntry",
         );
-        expect(typeFindings).toHaveLength(0);
+        expect(typeFindings, "Unused interface should now be flagged").toHaveLength(1);
       },
     );
   });
 
-  it("does not flag an unused type alias as unused-export", async () => {
+  it("DOES flag an unused type alias as unused-export", async () => {
     await withTempDir(
       {
         "entry.ts": `import './types.js'; export const x = 1;`,
@@ -170,12 +147,12 @@ describe("Analyser: TypeScript type-only exports do not produce unused-export fi
         const typeFindings = report.findings.filter(
           (f) => f.rule === "unused-export" && f.evidence.exportName === "Confidence",
         );
-        expect(typeFindings).toHaveLength(0);
+        expect(typeFindings, "Unused type alias should now be flagged").toHaveLength(1);
       },
     );
   });
 
-  it("does not flag an unused CONST enum as unused-export", async () => {
+  it("DOES flag an unused CONST enum as unused-export", async () => {
     await withTempDir(
       {
         "entry.ts": `import './types.js'; export const x = 1;`,
@@ -194,12 +171,12 @@ describe("Analyser: TypeScript type-only exports do not produce unused-export fi
         const typeFindings = report.findings.filter(
           (f) => f.rule === "unused-export" && f.evidence.exportName === "Status",
         );
-        expect(typeFindings).toHaveLength(0);
+        expect(typeFindings, "Unused const enum should now be flagged").toHaveLength(1);
       },
     );
   });
 
-  it("DOES flag a regular unused enum as unused-export (because it emits runtime code)", async () => {
+  it("DOES flag a regular unused enum as unused-export", async () => {
     await withTempDir(
       {
         "entry.ts": `import './types.js'; export const x = 1;`,
@@ -223,7 +200,7 @@ describe("Analyser: TypeScript type-only exports do not produce unused-export fi
     );
   });
 
-  it("does not flag an `export type { … }` re-export as unused-export", async () => {
+  it("DOES flag an `export type { … }` re-export as unused-export", async () => {
     await withTempDir(
       {
         "entry.ts": `import './types.js'; export const x = 1;`,
@@ -245,12 +222,12 @@ describe("Analyser: TypeScript type-only exports do not produce unused-export fi
         const typeFindings = report.findings.filter(
           (f) => f.rule === "unused-export" && f.evidence.exportName === "DynamicPattern",
         );
-        expect(typeFindings).toHaveLength(0);
+        expect(typeFindings, "Unused type re-export should now be flagged").toHaveLength(1);
       },
     );
   });
 
-  it("does not flag multiple mixed type-only constructs in a single file", async () => {
+  it("flags multiple unused type-only constructs", async () => {
     await withTempDir(
       {
         "entry.ts": `import './types.js'; export const x = 1;`,
@@ -276,47 +253,13 @@ describe("Analyser: TypeScript type-only exports do not produce unused-export fi
           const found = report.findings.filter(
             (f) => f.rule === "unused-export" && f.evidence.exportName === name,
           );
-          expect(found, `'${name}' should not be reported as unused-export`).toHaveLength(0);
+          expect(found, `'${name}' should be reported as unused-export`).toHaveLength(1);
         }
       },
     );
   });
 
-  it("still flags a genuinely unused VALUE export (sanity check)", async () => {
-    await withTempDir(
-      {
-        "entry.ts": `import './lib.js'; export const x = 1;`,
-        "lib.ts": `
-          export const unusedValue = 42;
-          export interface SafeType { id: string; }
-        `,
-      },
-      async (dir) => {
-        const report = await analyze({
-          rootDir: dir,
-          entry: ["entry.ts"],
-          extensions: [".ts"],
-          ignore: [],
-          reportUnusedExports: true,
-          includeConventionalEntries: false,
-        });
-
-        // The value export must still be flagged
-        const valueFinding = report.findings.find(
-          (f) => f.rule === "unused-export" && f.evidence.exportName === "unusedValue",
-        );
-        expect(valueFinding, "unusedValue should be reported as unused-export").toBeDefined();
-
-        // But the interface must NOT be flagged
-        const typeFinding = report.findings.find(
-          (f) => f.rule === "unused-export" && f.evidence.exportName === "SafeType",
-        );
-        expect(typeFinding, "SafeType interface should NOT be reported as unused-export").toBeUndefined();
-      },
-    );
-  });
-
-  it("uses the fixture directory: all type-only exports in types.ts are not flagged", async () => {
+  it("uses the fixture directory: all type-only exports in types.ts are now flagged if unused", async () => {
     const fixtureDir = path.join(__dirname, "fixtures", "ts-type-only-test");
 
     const report = await analyze({
@@ -328,19 +271,12 @@ describe("Analyser: TypeScript type-only exports do not produce unused-export fi
       includeConventionalEntries: false,
     });
 
-    // These are all type-only exports in the fixture – none should appear in findings
     const typeOnlyNames = ["CacheEntry", "Confidence", "Status", "DynamicPattern", "Repository"];
     for (const name of typeOnlyNames) {
       const found = report.findings.filter(
         (f) => f.rule === "unused-export" && f.evidence.exportName === name,
       );
-      expect(found, `'${name}' should not be reported as unused-export`).toHaveLength(0);
+      expect(found, `'${name}' should be reported as unused-export`).toHaveLength(1);
     }
-
-    // VERSION is a value export that IS used in entry.ts – it must not be flagged either
-    const versionFinding = report.findings.find(
-      (f) => f.rule === "unused-export" && f.evidence.exportName === "VERSION",
-    );
-    expect(versionFinding, "VERSION is used and should not be flagged").toBeUndefined();
   });
 });
