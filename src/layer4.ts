@@ -161,7 +161,28 @@ async function resolveDynamicImports(context: AnalysisContext, quickJS: any) {
         finalTargetsHandle.dispose();
         finalGlobalHandle.dispose();
 
-        if (Array.isArray(targets)) {
+        if (Array.isArray(targets) && targets.length > 0) {
+          // Mark the corresponding edge as resolved to suppress the warning
+          const module = context.modules.get(file);
+          if (module) {
+            if (context.options.verbose) {
+              console.log(`[Layer 4] Searching for edge in ${file} at ${candidate.line}:${candidate.column}`);
+              module.edges.forEach(e => {
+                if (e.kind === "unknown-dynamic") {
+                  console.log(`[Layer 4] Found unknown-dynamic edge at ${e.location?.start.line}:${e.location?.start.column}`);
+                }
+              });
+            }
+            const edge = module.edges.find(e => 
+              e.kind === "unknown-dynamic" && 
+              e.location?.start.line === candidate.line && 
+              e.location?.start.column === candidate.column
+            );
+            if (edge) {
+              edge.resolution = "resolved";
+            }
+          }
+
           for (const rawTarget of targets) {
             if (typeof rawTarget === 'string') {
               resolveAndMarkTarget(rawTarget, file, context);

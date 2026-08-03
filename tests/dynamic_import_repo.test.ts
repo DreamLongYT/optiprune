@@ -28,6 +28,18 @@ describe('Dynamic Import Analysis Reproduction', () => {
     }
     
     expect(unusedAngular, 'AngularPlugin should be recognized as used when Layer 4 is active').toBeUndefined();
+
+    const unknownDynamic = results.findings.find(f => 
+      f.rule === 'unknown-dynamic-import' && f.file.includes('engine.ts')
+    );
+    
+    if (unknownDynamic) {
+      console.log('❌ FAIL: engine.ts still has unknown-dynamic-import warning even though it was resolved.');
+    } else {
+      console.log('✅ SUCCESS: unknown-dynamic-import warning was correctly removed after resolution.');
+    }
+    
+    expect(unknownDynamic, 'Warning should be removed after successful Layer 4 resolution').toBeUndefined();
   });
 
   it('should flag AngularPlugin as unused when Layer 4 simulation is DISABLED (Baseline Check)', async () => {

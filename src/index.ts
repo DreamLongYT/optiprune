@@ -275,6 +275,31 @@ let entryPoints = new Set<string>();
     findings.push(...layer6Findings);
   }
 
+  // Layer 2: Control Flow Graph (CFG)
+  const layer2Findings = analyzeLayer2(context);
+  findings.push(...layer2Findings);
+
+  // Phase 2: Layer 3 (Conditional Z3 SMT)
+  if (!resolvedOptions.layers.skip3) {
+    const layer3Findings = await analyzeLayer3(context);
+    findings.push(...layer3Findings);
+  }
+  
+  // Phase 3: Layer 4 (node:vm sandbox)
+  if (!resolvedOptions.layers.skip4) {
+    const layer4Findings = await analyzeLayer4(context);
+    findings.push(...layer4Findings);
+  }
+  
+  // Phase 4: Layer 7 (Non-Standard Entry & Implicit Binding Engine)
+  const layer7Findings = await analyzeLayer7(context);
+  findings.push(...layer7Findings);
+
+  // Phase 5: Headless Living Graph Engine (Symbolic Evaluation)
+  const symbolicFindings = await symbolicEngine.evaluateContracts(context);
+  findings.push(...symbolicFindings);
+
+  // Add parser and resolution findings after all layers had a chance to resolve them
   for (const module of modules.values()) {
     for (const diagnostic of module.parseDiagnostics) {
       findings.push({
@@ -300,7 +325,7 @@ let entryPoints = new Set<string>();
           evidence: {},
         });
       }
-      if (edge.kind === "unknown-dynamic") {
+      if (edge.kind === "unknown-dynamic" && edge.resolution !== "resolved") {
         findings.push({
           rule: "unknown-dynamic-import",
           severity: "warning",
@@ -313,30 +338,6 @@ let entryPoints = new Set<string>();
       }
     }
   }
-
-  // Layer 2: Control Flow Graph (CFG)
-  const layer2Findings = analyzeLayer2(context);
-  findings.push(...layer2Findings);
-
-  // Phase 2: Layer 3 (Conditional Z3 SMT)
-  if (!resolvedOptions.layers.skip3) {
-    const layer3Findings = await analyzeLayer3(context);
-    findings.push(...layer3Findings);
-  }
-  
-  // Phase 3: Layer 4 (node:vm sandbox)
-  if (!resolvedOptions.layers.skip4) {
-    const layer4Findings = await analyzeLayer4(context);
-    findings.push(...layer4Findings);
-  }
-  
-  // Phase 4: Layer 7 (Non-Standard Entry & Implicit Binding Engine)
-  const layer7Findings = await analyzeLayer7(context);
-  findings.push(...layer7Findings);
-
-  // Phase 5: Headless Living Graph Engine (Symbolic Evaluation)
-  const symbolicFindings = await symbolicEngine.evaluateContracts(context);
-  findings.push(...symbolicFindings);
 
   // Final Reporting Phase: Unused Exports & Unreachable Files
   // We do this at the end so all layers (Layer 4, 7, etc.) have a chance to refine reachability and usage.
