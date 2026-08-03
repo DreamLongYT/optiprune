@@ -15,6 +15,7 @@ export const DEFAULT_CONFIG: ResolvedOptions = {
   json: false,
   includeConventionalEntries: true,
   externalContracts: [],
+  verbose: false,
   pathAliases: new Map<string, string[]>(),
   layers: {
     smtTimeoutMs: 100,

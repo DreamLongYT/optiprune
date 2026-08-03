@@ -275,84 +275,7 @@ let entryPoints = new Set<string>();
     findings.push(...layer6Findings);
   }
 
-  // Layer 1: Unused Exports & Unreachable Files
-  if (resolvedOptions.reportUnusedExports) {
-    const importUsage = buildImportUsage(modules);
-    for (const module of modules.values()) {
-      if (context.reachable.has(module.id) || context.maybeReachable.has(module.id)) {
-        for (const exp of module.exports) {
-          // If it's an external contract (Layer 5/6), it's NEVER unused.
-          if (exp.isExternalContract) continue;
-
-          // If the module is a public entry point (e.g. from package.json), its exports are part of the public API and should not be reported as unused.
-          if ((context as any).publicEntryPoints?.has(module.id)) continue;
-
-          const isExportUsed = context.usedExports.has(`${module.id}:${exp.exportedAs}`);
-          
-          // If the module is only "maybeReachable" (e.g. detected via dynamic discovery),
-          // or if we have a reachable unknown dynamic boundary (World Peace),
-          // we still report unused exports but with lower confidence to avoid false positives
-          // while still providing value.
-          let confidence: import('./types.js').Confidence = "high";
-          if (context.maybeReachable.has(module.id)) confidence = "medium";
-          if (context.hasReachableUnknownDynamicBoundary) confidence = "low";
-
-          if (context.hasReachableUnknownDynamicBoundary && isExportUsed) continue;
-          
-          // Refinement for Monorepo/Re-export chains:
-          // If an export is "used" but ONLY by modules that themselves are only re-exporting it
-          // (and those re-exporters have no "real" consumers), then it's effectively unused.
-          let isEffectivelyUsed = isExportUsed;
-          if (isExportUsed) {
-            const usage = importUsage.get(module.id);
-            if (usage && usage.reExportOnly) {
-              const hasRealConsumer = Array.from(usage.consumers).some(c => {
-                const cUsage = importUsage.get(c);
-                // A consumer is "real" if it's an entry point (always real)
-                // OR if it's NOT a re-export-only module.
-                return context.entryPoints.has(c) || (cUsage && !cUsage.reExportOnly);
-              });
-              if (!hasRealConsumer) {
-                isEffectivelyUsed = false;
-              }
-            }
-          }
-
-          if (!isEffectivelyUsed && exp.exportedAs !== "default") {
-            findings.push({
-              rule: "unused-export",
-              severity: "warning",
-              confidence: confidence,
-              message: "Export '" + exp.exportedAs + "' is never imported or referenced.",
-              file: module.id,
-              ...(exp.location && { location: exp.location }),
-              evidence: { exportName: exp.exportedAs },
-            });
-          }
-        }
-      }
-    }
-  }
-
   for (const module of modules.values()) {
-    if (!context.reachable.has(module.id) && !context.maybeReachable.has(module.id)) {
-      const fileComponent = context.components.find((c) => c.modules.includes(module.id));
-      findings.push({
-        rule: "unreachable-file",
-        severity: "warning",
-        confidence: module.hasUnknownDynamicBoundary ? "medium" : "high",
-        message: fileComponent?.isCycle
-          ? "File is part of an isolated circular dependency cycle (" + fileComponent.id + ") and is unreachable from entry points."
-          : "File is not reachable from any entry point.",
-        file: module.id,
-        evidence: {
-          entryPoints: [...context.entryPoints].map((p) => relativeDisplayPath(rootDir, p)),
-          componentId: fileComponent?.id,
-          cycleSize: fileComponent?.modules.length,
-        },
-      });
-    }
-
     for (const diagnostic of module.parseDiagnostics) {
       findings.push({
         rule: "parse-recovery",
@@ -414,6 +337,74 @@ let entryPoints = new Set<string>();
   // Phase 5: Headless Living Graph Engine (Symbolic Evaluation)
   const symbolicFindings = await symbolicEngine.evaluateContracts(context);
   findings.push(...symbolicFindings);
+
+  // Final Reporting Phase: Unused Exports & Unreachable Files
+  // We do this at the end so all layers (Layer 4, 7, etc.) have a chance to refine reachability and usage.
+  if (resolvedOptions.reportUnusedExports) {
+    const importUsage = buildImportUsage(modules);
+    for (const module of modules.values()) {
+      if (context.reachable.has(module.id) || context.maybeReachable.has(module.id)) {
+        for (const exp of module.exports) {
+          if (exp.isExternalContract) continue;
+          if ((context as any).publicEntryPoints?.has(module.id)) continue;
+
+          const isExportUsed = context.usedExports.has(`${module.id}:${exp.exportedAs}`);
+          
+          let confidence: import('./types.js').Confidence = "high";
+          if (context.maybeReachable.has(module.id)) confidence = "medium";
+          if (context.hasReachableUnknownDynamicBoundary) confidence = "low";
+
+          if (context.hasReachableUnknownDynamicBoundary && isExportUsed) continue;
+          
+          let isEffectivelyUsed = isExportUsed;
+          if (isExportUsed) {
+            const usage = importUsage.get(module.id);
+            if (usage && usage.reExportOnly) {
+              const hasRealConsumer = Array.from(usage.consumers).some(c => {
+                const cUsage = importUsage.get(c);
+                return context.entryPoints.has(c) || (cUsage && !cUsage.reExportOnly);
+              });
+              if (!hasRealConsumer) {
+                isEffectivelyUsed = false;
+              }
+            }
+          }
+
+          if (!isEffectivelyUsed && exp.exportedAs !== "default") {
+            findings.push({
+              rule: "unused-export",
+              severity: "warning",
+              confidence: confidence,
+              message: "Export '" + exp.exportedAs + "' is never imported or referenced.",
+              file: module.id,
+              ...(exp.location && { location: exp.location }),
+              evidence: { exportName: exp.exportedAs },
+            });
+          }
+        }
+      }
+    }
+  }
+
+  for (const module of modules.values()) {
+    if (!context.reachable.has(module.id) && !context.maybeReachable.has(module.id)) {
+      const fileComponent = context.components.find((c) => c.modules.includes(module.id));
+      findings.push({
+        rule: "unreachable-file",
+        severity: "warning",
+        confidence: module.hasUnknownDynamicBoundary ? "medium" : "high",
+        message: fileComponent?.isCycle
+          ? "File is part of an isolated circular dependency cycle (" + fileComponent.id + ") and is unreachable from entry points."
+          : "File is not reachable from any entry point.",
+        file: module.id,
+        evidence: {
+          entryPoints: [...context.entryPoints].map((p) => relativeDisplayPath(rootDir, p)),
+          componentId: fileComponent?.id,
+          cycleSize: fileComponent?.modules.length,
+        },
+      });
+    }
+  }
 
   const summary: AnalysisSummary = {
     filesDiscovered: allSourceFiles.length,

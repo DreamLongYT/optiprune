@@ -47,6 +47,7 @@ export interface DependencyEdge {
   location?: Range;
   importedNames: string[];
   dynamicPattern?: DynamicPattern;
+  dynamicExpression?: string | undefined;
   resolution: "resolved" | "unresolved" | "external" | "unknown";
   isTypeOnly?: boolean;
 }
@@ -71,6 +72,7 @@ export interface ModuleRecord {
   hasParseError: boolean;
   hasUnresolvedCommonJsExports: boolean;
   scannedDirectories: string[];
+  dynamicImportCandidates: DynamicImportCandidate[];
 }
 
 export interface WorkspacePackage {
@@ -105,6 +107,14 @@ export interface CandidateBranch {
   line: number;
   instrumentedCode: string;
   seedInput: Record<string, any>;
+}
+
+export interface DynamicImportCandidate {
+  file: string;
+  line: number;
+  column: number;
+  expression: string; // The code to evaluate (e.g., path.join(pluginsDir, file))
+  contextCode: string; // Surrounding code needed for evaluation
 }
 
 export interface Finding {
@@ -142,6 +152,7 @@ export interface AnalyzerOptions {
   includeConventionalEntries?: boolean;
   skip3?: boolean;
   skip4?: boolean;
+  verbose?: boolean;
 }
 
 export type RuleSeverity = "error" | "warning" | "off";
@@ -156,6 +167,7 @@ export interface Config {
   includeConventionalEntries?: boolean;
   failOn?: FailOn;
   json?: boolean;
+  verbose?: boolean;
   layers?: {
     smtTimeoutMs?: number;
     isolateMemoryLimitMb?: number;
@@ -180,6 +192,7 @@ export interface ResolvedOptions {
   pathAliases: Map<string, string[]>;
   baseUrl?: string;
   externalContracts: string[];
+  verbose: boolean;
   layers: {
     smtTimeoutMs: number;
     isolateMemoryLimitMb: number;
@@ -246,6 +259,7 @@ export interface AnalysisContext {
   components: StronglyConnectedComponent[];
   usedExports: Set<string>;
   candidateBranches: CandidateBranch[];
+  dynamicImportCandidates: DynamicImportCandidate[];
   monorepo?: MonorepoGraph;
   semanticGraph?: any; // SemanticGraph instance
   symbolicContracts?: Map<string, any>;

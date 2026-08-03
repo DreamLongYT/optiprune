@@ -6,6 +6,7 @@ import type {
   ParseDiagnostic,
   Position,
   Range,
+  DynamicImportCandidate,
 } from "./types.js";
 
 interface AstNode {
@@ -143,6 +144,7 @@ function addEdge(
   node: AstNode,
   importedNames: string[] = [],
   isTypeOnly: boolean = false,
+  dynamicExpression?: string,
 ): void {
   const edge: DependencyEdge = {
     source: sourceFile,
@@ -151,6 +153,7 @@ function addEdge(
     importedNames,
     resolution: "unknown",
     isTypeOnly,
+    dynamicExpression,
   };
   const location = positionRange(node);
   if (location) {
@@ -221,17 +224,20 @@ function templateParts(node: unknown): { prefix: string; suffix: string } | unde
   return { prefix: firstValue, suffix: lastValue };
 }
 
-function walk(node: unknown, visitor: (node: AstNode) => void): void {
+function walk(node: unknown, visitor: (node: AstNode, stack: AstNode[]) => void, stack: AstNode[] = []): void {
   if (Array.isArray(node)) {
     for (const item of node) {
-      walk(item, visitor);
+      walk(item, visitor, stack);
     }
     return;
   }
   if (!isNode(node)) {
     return;
   }
-  visitor(node);
+  
+  const currentStack = [...stack, node];
+  visitor(node, stack);
+  
   for (const [key, value] of Object.entries(node)) {
     if (
       key === "loc" ||
@@ -245,7 +251,7 @@ function walk(node: unknown, visitor: (node: AstNode) => void): void {
       continue;
     }
     if (Array.isArray(value) || isNode(value)) {
-      walk(value, visitor);
+      walk(value, visitor, currentStack);
     }
   }
 }
@@ -271,8 +277,9 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
   let hasUnknownDynamicBoundary = false;
   let hasUnresolvedCommonJsExports = false;
   const scannedDirectories: string[] = [];
+  const dynamicImportCandidates: DynamicImportCandidate[] = [];
 
-  walk(ast, (node) => {
+  walk(ast, (node, stack) => {
     if (node.type === "ImportDeclaration") {
       const specifier = nodeStringValue(node.source);
       if (specifier) {
@@ -340,6 +347,7 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
       return;
     }
 
+
     if (isDynamicImportCall(node)) {
       const argument = dynamicArgument(node);
       let literal = nodeStringValue(argument);
@@ -376,7 +384,56 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
           edges.push(edge);
         } else {
           hasUnknownDynamicBoundary = true;
-          addEdge(edges, file, "<unknown dynamic import>", "unknown-dynamic", node, ["*"]);
+          const expressionText = sourceText.slice(node.start as number, node.end as number);
+          const location = positionRange(node);
+          if (location) {
+            // Find the containing function or block to capture local variables
+            let contextCode = "";
+            const scopeNode = [...stack].reverse().find(n => 
+              n.type === "FunctionDeclaration" || 
+              n.type === "FunctionExpression" || 
+              n.type === "ArrowFunctionExpression" ||
+              n.type === "ClassMethod" ||
+              n.type === "ObjectMethod"
+            );
+            
+            if (scopeNode && isNode(scopeNode.body)) {
+              const body = scopeNode.body as any;
+              const start = body.start;
+              if (typeof start === "number" && typeof node.start === "number") {
+                const bStart = (body.type === "BlockStatement" ? start + 1 : start) as number;
+                const bEnd = (body.end as number) - (body.type === "BlockStatement" ? 1 : 0);
+                let code = sourceText.slice(bStart, bEnd);
+                
+                // Prepend parameters as variables so they are defined (even if undefined)
+                const params = (scopeNode as any).params;
+                if (Array.isArray(params)) {
+                  const paramNames = params.flatMap(p => bindingNames(p));
+                  if (paramNames.length > 0) {
+                    code = `var ${paramNames.join(', ')};\n${code}`;
+                  }
+                }
+                contextCode = code;
+              }
+            }
+            
+            // In a real scenario, we might want to log this if verbose is enabled
+            // However, parser.ts doesn't have easy access to options here.
+            // We'll leave it as is for now to avoid breaking the signature.
+            
+            if (!contextCode) {
+              contextCode = sourceText.slice(Math.max(0, (node.start as number) - 500), (node.end as number) + 500);
+            }
+
+            dynamicImportCandidates.push({
+              file,
+              line: location.start.line,
+              column: location.start.column,
+              expression: expressionText,
+              contextCode: contextCode,
+            });
+          }
+          addEdge(edges, file, "<unknown dynamic import>", "unknown-dynamic", node, ["*"], false, expressionText);
         }
       }
       return;
@@ -445,6 +502,7 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
     hasParseError: parserErrors.length > 0,
     hasUnresolvedCommonJsExports,
     scannedDirectories,
+    dynamicImportCandidates,
   };
   return module;
 }
@@ -562,8 +620,9 @@ function fallbackModule(sourceText: string, file: string, reason: unknown): Modu
     edges: fallbackEdges(sourceText, file),
     hasUnknownDynamicBoundary: false, // Parse error is not necessarily a dynamic boundary
     hasParseError: true,
-    hasUnresolvedCommonJsExports: true,
+    hasUnresolvedCommonJsExports: false,
     scannedDirectories: [],
+    dynamicImportCandidates: [],
   };
 }
 

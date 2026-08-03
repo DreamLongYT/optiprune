@@ -509,5 +509,6 @@ export function contextWithGraph(
     components: graph.components,
     usedExports: graph.usedExports,
     candidateBranches: [],
+    dynamicImportCandidates: Array.from(modules.values()).flatMap(m => m.dynamicImportCandidates || []),
   };
 }

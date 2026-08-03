@@ -31,7 +31,7 @@ Optiprune runs code through a 7-stage analysis pipeline:
 | **Layer 1** | Entry Point Graph | Static import/export dependency graph & entry point discovery |
 | **Layer 2** | Monorepo & Workspaces | Cross-package references and boundary resolution |
 | **Layer 3** | Dynamic Tracing & SMT | Path unreachability via Z3 constraint solving |
-| **Layer 4** | Isolated V8 Execution | Candidate validation inside sandboxed `isolated-vm` Isolates |
+| **Layer 4** | Isolated V8 Execution | Candidate validation inside sandboxed `WASM` Isolates |
 | **Layer 5** | AST Contract & Schema | Preserves Zod/Schema classes, decorators, and API boundaries |
 | **Layer 6** | Unused Package Sweeper | Flags unused external dependencies in `package.json` |
 | **Layer 7** | Non-Standard Entry | Implicit bindings (DI/Events) and Dynamic Specifier resolution |
