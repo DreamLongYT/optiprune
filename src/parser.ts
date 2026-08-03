@@ -330,15 +330,22 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
     if (node.type === "ExportNamedDeclaration") {
       const specifier = nodeStringValue(node.source);
       if (specifier) {
-        const exportedNames = exportSpecifierNames(asArray(node.specifiers), false);
-        const localNames = exportSpecifierNames(asArray(node.specifiers), true);
         const isTypeOnly = node.exportKind === "type";
-        // Edge should use local names (names from the source module)
-        addEdge(edges, file, specifier, "export-from", node, localNames, isTypeOnly);
-        // Exports should use exported names (names this module provides)
-        for (const exportedName of exportedNames) {
-          addExport(exportsList, exportedName, node, undefined, { name: exportedName, isReExport: true, isTypeOnly: node.exportKind === "type" });
+        const specifiers = asArray(node.specifiers);
+        const localNames: string[] = [];
+        for (const spec of specifiers) {
+          if (isNode(spec) && spec.type === "ExportSpecifier") {
+            const localName = propertyKeyName(spec.local || spec.exported) ?? "*";
+            const exportedName = propertyKeyName(spec.exported) ?? "*";
+            localNames.push(localName);
+            addExport(exportsList, exportedName, node, spec.exported as AstNode, { 
+              name: localName, 
+              isReExport: true, 
+              isTypeOnly: isTypeOnly 
+            });
+          }
         }
+        addEdge(edges, file, specifier, "export-from", node, localNames, isTypeOnly);
       } else if (isNode(node.declaration)) {
         const declaration = node.declaration;
         if ((declaration.type === "FunctionDeclaration" || declaration.type === "ClassDeclaration" || declaration.type === "TSInterfaceDeclaration" || declaration.type === "TSTypeAliasDeclaration" || declaration.type === "TSEnumDeclaration") && nodeIdentifierName(declaration.id)) {
