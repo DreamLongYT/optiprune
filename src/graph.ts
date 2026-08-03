@@ -392,37 +392,92 @@ export function buildImportUsage(modules: Map<string, ModuleRecord>): Map<string
 export function buildUsedExports(modules: Map<string, ModuleRecord>): Set<string> {
   const usedExports = new Set<string>();
   const importUsage = buildImportUsage(modules);
+  
+  // 1. Initial pass: Mark exports used by non-re-export imports
+  // and resolve explicit re-exports (export { x } from 'mod')
+  const worklist: Array<{ moduleId: string, name: string }> = [];
 
   for (const [moduleId, usage] of importUsage.entries()) {
     const module = modules.get(moduleId);
-    if (!module) {
-      continue;
-    }
+    if (!module) continue;
 
     for (const exp of module.exports) {
-      // If an export is marked as an external contract, it's considered used.
       if (exp.isExternalContract) {
         usedExports.add(`${moduleId}:${exp.exportedAs}`);
-        continue; // Move to the next export
+        continue;
       }
 
-      // Type-only exports are now tracked and can be marked as used by imports.
-
-        if (usage.wildcard) {
-        usedExports.add(`${moduleId}:${exp.exportedAs}`);
-      } else {
-        const importedName = Array.from(usage.names).find((name) => {
-          if (name === "default" && exp.isDefault) {
-            return true;
+      // If it's a direct import (not a re-export)
+      if (!usage.reExportOnly) {
+        if (usage.wildcard || usage.names.has(exp.exportedAs) || (exp.isDefault && usage.names.has('default'))) {
+          if (!usedExports.has(`${moduleId}:${exp.exportedAs}`)) {
+            usedExports.add(`${moduleId}:${exp.exportedAs}`);
+            worklist.push({ moduleId, name: exp.exportedAs });
           }
-          return exp.exportedAs === name;
-        });
-        if (importedName) {
-          usedExports.add(`${moduleId}:${exp.exportedAs}`);
         }
       }
     }
   }
+
+  // 2. Propagation pass: Follow re-export chains
+  // This handles: App -> Barrel (export * from 'Lib') -> Lib
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const module of modules.values()) {
+      for (const edge of module.edges) {
+        if (edge.kind === 'export-all' || edge.kind === 'export-from') {
+          for (const targetId of edgeTargets(edge)) {
+            const targetModule = modules.get(targetId);
+            if (!targetModule) continue;
+
+            // If someone uses an export from 'module', and 'module' re-exports it from 'targetModule'
+            const moduleUsage = importUsage.get(module.id);
+            if (!moduleUsage) continue;
+
+            for (const exp of targetModule.exports) {
+              const exportKey = `${targetId}:${exp.exportedAs}`;
+              if (usedExports.has(exportKey)) continue;
+
+              let isUsedViaReExport = false;
+
+              if (edge.kind === 'export-all') {
+                // If the barrel is used, its wildcard re-exports are potentially used
+                // We check if any consumer of the barrel is requesting a name that isn't in the barrel itself
+                const barrelExports = new Set(module.exports.map(e => e.exportedAs));
+                const requestedFromBarrel = Array.from(moduleUsage.names);
+                
+                const isRequested = requestedFromBarrel.some(name => !barrelExports.has(name)) || moduleUsage.wildcard;
+                if (isRequested) {
+                  isUsedViaReExport = true;
+                }
+              } else if (edge.kind === 'export-from') {
+                // Explicit re-export: export { x } from 'mod'
+                // edge.importedNames contains the names from 'targetModule'
+                // We need to see if the corresponding exported name in 'module' is used
+                for (const edgeImportName of edge.importedNames) {
+                   if (edgeImportName === exp.exportedAs || (exp.isDefault && edgeImportName === 'default')) {
+                     // Find the name this is exported as in 'module'
+                     const correspondingExport = module.exports.find(e => e.isReExport && e.name === edgeImportName);
+                     if (correspondingExport && usedExports.has(`${module.id}:${correspondingExport.exportedAs}`)) {
+                       isUsedViaReExport = true;
+                       break;
+                     }
+                   }
+                }
+              }
+
+              if (isUsedViaReExport) {
+                usedExports.add(exportKey);
+                changed = true;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   return usedExports;
 }
 

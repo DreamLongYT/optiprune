@@ -340,8 +340,18 @@ export function conventionalEntryPatterns(): string[] {
     "src/app.*",
     "src/server.*",
     "src/cli.*",
-    "app/**/*.{ts,tsx,js,jsx}",
-    "pages/**/*.{ts,tsx,js,jsx}",
+    "app/**/*.ts",
+    "app/**/*.tsx",
+    "app/**/*.js",
+    "app/**/*.jsx",
+    "apps/**/*.ts",
+    "apps/**/*.tsx",
+    "apps/**/*.js",
+    "apps/**/*.jsx",
+    "pages/**/*.ts",
+    "pages/**/*.tsx",
+    "pages/**/*.js",
+    "pages/**/*.jsx",
   ];
 }
 

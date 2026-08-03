@@ -41,7 +41,8 @@ import type {
   ResolvedOptions,
 } from "./types.js";
 import { CONFIDENCE_RANK } from "./types.js";
-const pkg = (await readJsonFile("package.json")) as { version?: string } | null;
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const pkg = (await readJsonFile(path.join(__dirname, "..", "package.json"))) as { version?: string } | null;
 const VERSION = pkg?.version ?? "1.8.1";
 
 import { DEFAULT_CONFIG, loadConfig, mergeConfig } from "./config-loader.js";
@@ -173,6 +174,7 @@ let entryPoints = new Set<string>();
     }
   }
 
+  const publicEntryPoints = new Set<string>();
   if (includeConventionalEntries) {
     const rootPackageEntries = await discoverPackageEntryPatterns(rootDir);
     for (const pattern of [...rootPackageEntries, ...conventionalEntryPatterns()]) {
@@ -181,15 +183,18 @@ let entryPoints = new Set<string>();
       }
     }
 
+    // In a monorepo, we do NOT add all workspace entry points to the reachability 'entryPoints'.
+    // Instead, they are added to 'publicEntryPoints' to protect their exports, 
+    // but their files are only 'reachable' if imported by a root entry point or another reachable workspace.
     if (resolvedOptions.monorepo) {
       for (const pkg of resolvedOptions.monorepo.packageMap.values()) {
         const pkgEntries = await discoverPackageEntryPatterns(pkg.location);
         for (const pattern of [...pkgEntries, ...conventionalEntryPatterns()]) {
-          // Use path.posix.relative and path.posix.join for internal pattern construction
           const relativeToRoot = path.posix.relative(rootDir, pkg.location);
           const adjustedPattern = pattern.startsWith('/') ? pattern : path.posix.join(relativeToRoot, pattern);
           for (const expanded of expandEntryPatterns(allSourceFiles, rootDir, [adjustedPattern])) {
-            entryPoints.add(path.normalize(expanded));
+            // Only add to publicEntryPoints, NOT to reachability entryPoints
+            publicEntryPoints.add(path.normalize(expanded));
           }
         }
       }
@@ -209,7 +214,6 @@ let entryPoints = new Set<string>();
     });
   }
 
-  const publicEntryPoints = new Set<string>();
   if (includeConventionalEntries) {
     const rawPackageEntries = await discoverPackageEntryPatterns(rootDir);
     const rootPackageEntries = rawPackageEntries.flatMap(entry => {

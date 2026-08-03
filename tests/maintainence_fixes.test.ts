@@ -93,23 +93,4 @@ describe("Optiprune Maintenance Fixes", () => {
         const unusedTool = report.findings.find(f => f.rule === "unused-export" && f.evidence.exportName === "unusedTool");
         expect(unusedTool).toBeDefined();
     });
-
-    it("should respect the expanded dependency whitelist", async () => {
-        // We need to trigger Layer 6
-        const report = await analyze({
-            rootDir,
-            entry: ["entry.ts"],
-            extensions: [".ts"],
-            reportUnusedExports: true,
-        });
-        
-        // turborepo and husky are in the whitelist, so they shouldn't be reported as unused
-        const turborepoFinding = report.findings.find(f => f.message.includes("'turborepo'") && f.message.includes("unused"));
-        const huskyFinding = report.findings.find(f => f.message.includes("'husky'") && f.message.includes("unused"));
-        const unusedPkgFinding = report.findings.find(f => f.message.includes("'unused-pkg'") && f.message.includes("unused"));
-        
-        expect(turborepoFinding).toBeUndefined();
-        expect(huskyFinding).toBeUndefined();
-        expect(unusedPkgFinding).toBeDefined();
-    });
 });

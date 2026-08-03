@@ -131,18 +131,37 @@ export async function analyzeLayer6(context: AnalysisContext): Promise<Finding[]
   
   // 1. Audit declared dependencies vs imported ones
   const lockfileGraph = buildLockfileGraph(projectRoot);
-  const importedPackages = new Set<string>();
   
+  // Track imports per-package for monorepos, or globally for simple repos
+  const packageImportMap = new Map<string, Set<string>>();
+  const globalImports = new Set<string>();
+
   for (const module of context.modules.values()) {
+    // Determine which workspace this module belongs to
+    let ownerPackage = 'root';
+    if (context.options.monorepo) {
+      for (const [name, pkg] of context.options.monorepo.packageMap.entries()) {
+        if (module.id.startsWith(pkg.location + path.sep) || module.id === pkg.location) {
+          ownerPackage = name;
+          break;
+        }
+      }
+    }
+
+    const pkgImports = packageImportMap.get(ownerPackage) || new Set<string>();
+    if (!packageImportMap.has(ownerPackage)) packageImportMap.set(ownerPackage, pkgImports);
+
     for (const edge of module.edges) {
       if (edge.resolution === 'external') {
         const parts = edge.rawSpecifier.split('/');
         const pkgName = edge.rawSpecifier.startsWith('@') ? `${parts[0] ?? ''}/${parts[1] ?? ''}` : (parts[0] ?? '');
-        importedPackages.add(pkgName);
+        pkgImports.add(pkgName);
+        globalImports.add(pkgName);
       } else if (edge.resolution === 'resolved' && edge.target && context.options.monorepo) {
         for (const [pkgName, pkg] of context.options.monorepo.packageMap.entries()) {
-          if (edge.target.startsWith(pkg.location + '/') || edge.target === pkg.location) {
-            importedPackages.add(pkgName);
+          if (edge.target.startsWith(pkg.location + path.sep) || edge.target === pkg.location) {
+            pkgImports.add(pkgName);
+            globalImports.add(pkgName);
             break;
           }
         }
@@ -151,14 +170,15 @@ export async function analyzeLayer6(context: AnalysisContext): Promise<Finding[]
   }
 
   // Find unused direct dependencies from all package.json files
-  const manifestPaths = [path.join(projectRoot, 'package.json')];
+  const manifestPaths = new Map<string, string>();
+  manifestPaths.set('root', path.join(projectRoot, 'package.json'));
   if (context.options.monorepo) {
-    for (const pkg of context.options.monorepo.packageMap.values()) {
-      manifestPaths.push(pkg.manifestPath);
+    for (const [name, pkg] of context.options.monorepo.packageMap.entries()) {
+      manifestPaths.set(name, pkg.manifestPath);
     }
   }
 
-  for (const manifestPath of manifestPaths) {
+  for (const [pkgName, manifestPath] of manifestPaths.entries()) {
     if (fs.existsSync(manifestPath)) {
       const pkg = await readJsonFile<Record<string, any>>(manifestPath);
       if (!pkg) continue;
@@ -167,22 +187,30 @@ export async function analyzeLayer6(context: AnalysisContext): Promise<Finding[]
       const devDependencies = pkg.devDependencies || {};
       const scripts = pkg.scripts || {};
       const relativeManifest = path.posix.relative(projectRoot, manifestPath);
+      
+      const importedInThisPackage = packageImportMap.get(pkgName) || new Set<string>();
 
       // 1. Collect binary usages from scripts
       const scriptUsages = new Set<string>();
       for (const script of Object.values(scripts) as string[]) {
-        // Simple heuristic: first word in a script is often a binary
-        const binary = script.trim().split(/\s+/)[0];
-        if (binary) scriptUsages.add(binary);
+        // Better heuristic: find all potential binaries
+        const words = script.split(/[\s|&;><!]/).filter(w => w.length > 0 && !w.startsWith('-'));
+        for (const word of words) {
+          scriptUsages.add(word);
+        }
         
-        // Also check for common patterns like 'npx cmd' or 'yarn cmd'
-        const npxMatch = script.match(/npx\s+([@\w\-/]+)/);
-        if (npxMatch?.[1]) scriptUsages.add(npxMatch[1]);
+        // Specifically check for npx/pnpm/yarn/npm exec patterns
+        const execMatches = script.matchAll(/(?:npx|pnpm|yarn|npm)\s+([@\w\-/]+)/g);
+        for (const match of execMatches) {
+          if (match[1]) scriptUsages.add(match[1]);
+        }
       }
 
       // 2. Audit Dependencies
       for (const dep of Object.keys(dependencies)) {
-        if (!importedPackages.has(dep) && !scriptUsages.has(dep)) {
+        // In monorepo, we check if it's used in this package OR if it's a workspace package used elsewhere
+        const isUsed = importedInThisPackage.has(dep) || scriptUsages.has(dep);
+        if (!isUsed) {
           findings.push({
             rule: 'unused-export',
             severity: 'warning',
@@ -204,41 +232,37 @@ export async function analyzeLayer6(context: AnalysisContext): Promise<Finding[]
         // Special handling for @types/
         if (dep.startsWith('@types/')) {
           const basePkg = dep.slice(7).replace('__', '/');
-          if (importedPackages.has(basePkg) || dependencies[basePkg] || devDependencies[basePkg]) {
+          if (importedInThisPackage.has(basePkg) || globalImports.has(basePkg) || dependencies[basePkg] || devDependencies[basePkg]) {
             continue; 
           }
         }
 
-        // Expanded Whitelist for config/tooling packages
-        const CONFIG_WHITELIST = [
-          'eslint', 'prettier', 'stylelint', 'commitlint', 'lint-staged', 'husky',
-          'vitest', 'jest', 'mocha', 'chai', 'cypress', 'playwright',
-          'webpack', 'vite', 'rollup', 'esbuild', 'parcel', 'gulp', 'grunt',
-          'postcss', 'tailwindcss', 'autoprefixer', 'sass', 'less',
+        // Refined Whitelist for config/tooling packages
+        // We only whitelist very core tools that are almost always implicitly used
+        const CORE_TOOLING = [
           'typescript', 'ts-node', 'tsx', 'babel', 'swc',
-          'nodemon', 'pm2', 'forever',
-          'semantic-release', 'lerna', 'changesets', 'turborepo', 'nx',
-          'dotenv', 'cross-env', 'env-cmd',
-          'ts-jest', 'babel-jest', 'vue-tsc', 'svelte-check',
-          'react-refresh', '@vitejs/plugin-', '@rollup/plugin-', 'eslint-plugin-', 'prettier-plugin-',
-          'typedoc', 'docusaurus', 'vitepress', 'astro',
-          'storybook', 'chromatic'
+          'eslint', 'prettier', 'husky', 'lint-staged',
+          'vitest', 'jest', 'cypress', 'playwright'
         ];
         
-        const isConfigPackage = CONFIG_WHITELIST.some(p => dep.includes(p));
+        const isCoreTool = CORE_TOOLING.some(p => dep.includes(p));
         
         // Heuristic: Check for common config files in root
         const commonConfigs = [
           '.eslintrc', '.prettierrc', 'vitest.config', 'jest.config', 'webpack.config', 'vite.config', 'rollup.config',
           'postcss.config', 'tailwind.config', 'tsconfig.json', 'babel.config', 'swc.config', 'lerna.json', 'turbo.json',
-          'nx.json', '.env', 'svelte.config', 'vue.config', 'astro.config'
+          'nx.json', '.env', 'svelte.config', 'vue.config', 'astro.config', 'package.json'
         ];
+        
         const hasRelatedConfig = commonConfigs.some(cfg => {
           const depBase = dep.split('/')[0]?.replace(/^@/, '').replace(/-config$/, '').replace(/config-/, '');
+          // If the dependency name (or part of it) is found in a config file name, it's likely used
           return cfg.includes(depBase || '___never___');
         });
 
-        if (!importedPackages.has(dep) && !scriptUsages.has(dep) && !isConfigPackage && !hasRelatedConfig) {
+        const isUsed = importedInThisPackage.has(dep) || scriptUsages.has(dep) || isCoreTool || hasRelatedConfig;
+
+        if (!isUsed) {
           findings.push({
             rule: 'unused-export',
             severity: 'info', // devDeps are usually less critical

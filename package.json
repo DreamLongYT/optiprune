@@ -1,11 +1,11 @@
 {
   "name": "optiprune",
-  "version": "1.8.1",
+  "version": "1.8.2",
   "description": "Resilient static dead-code analyzer for TypeScript and JavaScript workspaces.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "homepage": "https://dreamlongyt.github.io/optiprune/",
+  "homepage": "https://opti.drml.int.yt/",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/DreamLongYT/optiprune.git"
