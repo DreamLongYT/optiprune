@@ -435,7 +435,11 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
           const location = positionRange(node);
           if (location) edge.location = location;
           edges.push(edge);
-        } else {
+        }
+
+        // Even if it's a pattern, we add it to dynamicImportCandidates so Layer 4 
+        // can try to resolve it more precisely if possible.
+        {
           hasUnknownDynamicBoundary = true;
           const expressionText = sourceText.slice(node.start as number, node.end as number);
           const location = positionRange(node);
@@ -470,10 +474,6 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
               }
             }
             
-            // In a real scenario, we might want to log this if verbose is enabled
-            // However, parser.ts doesn't have easy access to options here.
-            // We'll leave it as is for now to avoid breaking the signature.
-            
             if (!contextCode) {
               contextCode = sourceText.slice(Math.max(0, (node.start as number) - 500), (node.end as number) + 500);
             }
@@ -486,7 +486,9 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
               contextCode: contextCode,
             });
           }
-          addEdge(edges, file, "<unknown dynamic import>", "unknown-dynamic", node, ["*"], false, expressionText);
+          if (!parts) {
+            addEdge(edges, file, "<unknown dynamic import>", "unknown-dynamic", node, ["*"], false, expressionText);
+          }
         }
       }
       return;

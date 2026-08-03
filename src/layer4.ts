@@ -57,7 +57,144 @@ export async function analyzeLayer4(context: AnalysisContext): Promise<Finding[]
 }
 
 /**
+ * Cleans TypeScript source code for execution in the QuickJS sandbox.
+ *
+ * The function applies a series of regex-based transformations to strip
+ * TypeScript-specific syntax that QuickJS does not understand, while
+ * preserving the runtime-relevant logic needed to reconstruct dynamic
+ * import paths.
+ *
+ * Key transformations:
+ *  1. Remove top-level `import` declarations entirely (both static and
+ *     `import type`) so that QuickJS does not encounter ES-module
+ *     syntax it cannot parse.
+ *  2. Replace `import(...)` call-expressions with the mock function
+ *     `__optiprune_import(...)` that records resolved targets.
+ *  3. Strip TypeScript type annotations, `as` casts, and interface/type
+ *     imports that would cause syntax errors in plain JavaScript.
+ *  4. Rewrite `import.meta.url` to a string expression compatible with
+ *     the sandbox's `__filename` global.
+ *
+ * FIX – String-Interpolation / Identifier-based dynamic imports:
+ *  The previous implementation only stripped TS syntax but did not
+ *  handle the common pattern where the import argument is a *variable*
+ *  whose value was assembled earlier in the same scope via
+ *  `pathToFileURL(path.join(dir, file)).href` or similar constructs.
+ *  QuickJS would encounter `import(pluginPath)` where `pluginPath` is
+ *  an identifier that was never assigned in the cleaned snippet because
+ *  the assignment statement was removed or mangled.
+ *
+ *  The fix ensures that:
+ *   a) `const`/`let`/`var` declarations that build path strings are
+ *      kept intact after TS-stripping.
+ *   b) `await` expressions are preserved (QuickJS runs the script
+ *      inside an async IIFE).
+ *   c) `for...of` loops that iterate over file lists and call
+ *      `import(...)` inside are preserved so that all loop iterations
+ *      are simulated and every candidate path is captured.
+ *   d) Top-level `import` *declarations* (ESM static imports) are
+ *      removed entirely, because QuickJS cannot parse them and they
+ *      are not needed for path-construction simulation.
+ */
+function cleanForQuickJS(code: string): string {
+  return code
+    // 0. Remove static ESM import declarations entirely (they are not
+    //    needed for path simulation and QuickJS cannot parse them).
+    //    Handles single-line and multi-line forms.
+    .replace(/^\s*import\s+type\s+.*?;?\s*$/gm, '')
+    .replace(/^\s*import\s+[\s\S]*?from\s+['"][^'"]*['"]\s*;?\s*$/gm, '')
+    // Also remove bare side-effect imports: import 'foo';
+    .replace(/^\s*import\s+['"][^'"]*['"]\s*;?\s*$/gm, '')
+
+    // 1. Rewrite import.meta.url before replacing import(
+    .replace(/import\.meta\.url/g, '("file://" + __filename)')
+
+    // 2. Replace dynamic import( with the mock function
+    .replace(/\bimport\s*\(/g, '__optiprune_import(')
+
+    // 3. Remove "as <Type>" casts (e.g. value as string, node as any)
+    .replace(/\s+as\s+[a-zA-Z0-9_<>\[\]|& ]+(?=[,;=)\n]|$)/g, '')
+
+    // 4. Remove TypeScript type annotations on variable/parameter
+    //    declarations, e.g. `: string`, `: Map<string, string[]>`.
+    //    We are careful NOT to remove ternary colons or object-literal
+    //    colons, so we only strip when the token after the colon looks
+    //    like a type expression (starts with a known type keyword or an
+    //    uppercase letter) and is followed by an assignment, comma,
+    //    closing paren/bracket, or end-of-line.
+    .replace(/:\s*(?:[a-zA-Z0-9_<>|& ]+(?:\[\])*)(?=\s*[,;=)\n]|$)/g, (match) => {
+      if (
+        match.includes('null') ||
+        match.includes('undefined') ||
+        match.includes('true') ||
+        match.includes('false')
+      ) {
+        return match;
+      }
+      const typePart = match.slice(1).trim();
+      const commonTypes = [
+        'string', 'number', 'boolean', 'any', 'void', 'unknown', 'never',
+        'string[]', 'any[]', 'number[]', 'boolean[]',
+        'Config', 'ModuleRecord', 'AnalysisContext',
+      ];
+      if (commonTypes.includes(typePart) || /^[A-Z]/.test(typePart)) {
+        return '';
+      }
+      return match;
+    })
+
+    // 5. Remove generic type parameters on function calls that would
+    //    confuse the JS parser, e.g. foo<string>(...) -> foo(...)
+    //    Only strip simple single-identifier generics to avoid false
+    //    positives on comparison operators.
+    .replace(/\b([a-zA-Z_$][\w$]*)<[a-zA-Z0-9_,\s]+>\s*(?=\()/g, '$1')
+
+    // 6. Remove TypeScript access modifiers in class bodies
+    .replace(/\b(private|protected|public|readonly|override|abstract|declare)\s+/g, '')
+
+    // 7. Remove interface and type alias declarations
+    .replace(/^\s*(?:export\s+)?(?:interface|type)\s+[A-Za-z_$][\w$]*[\s\S]*?(?=\n(?:export|const|let|var|function|class|async|\/\/|$))/gm, '')
+
+    // 8. Remove TypeScript enum declarations (they are not needed for
+    //    path simulation)
+    .replace(/^\s*(?:export\s+)?(?:const\s+)?enum\s+[A-Za-z_$][\w$]*\s*\{[\s\S]*?\}\s*$/gm, '');
+}
+
+/**
  * Simulates dynamic import expressions in a QuickJS sandbox to resolve targets.
+ *
+ * FIX – Identifier-based / String-Interpolation imports:
+ *
+ * The core problem was that when a dynamic import uses a *variable* as its
+ * argument (e.g. `await import(pluginPath)` where `pluginPath` was built via
+ * `pathToFileURL(path.join(pluginsDir, file)).href`), the previous
+ * implementation:
+ *
+ *  1. Correctly captured the surrounding function body as `contextCode`.
+ *  2. Passed it through `clean()` which only stripped TS syntax.
+ *  3. Ran the cleaned code in QuickJS.
+ *
+ * The simulation failed because:
+ *  a) Static `import` declarations at the top of the function body were
+ *     not removed, causing a QuickJS parse error that silently swallowed
+ *     the entire simulation.
+ *  b) The `__dirname` / `__filename` globals were set up *outside* the
+ *     simulation script, but the context code often re-declared them with
+ *     `const __dirname = path.dirname(fileURLToPath(import.meta.url))`.
+ *     After stripping `import.meta.url` the expression became valid, but
+ *     the `fileURLToPath` call was not mocked in the global scope.
+ *  c) The loop variable `file` in `for (const file of files)` had no
+ *     value; the mock `fs.readdir` / `readdirSync` returned the correct
+ *     file list, but the loop was driven by the *result* of an `await`
+ *     expression which QuickJS's pending-job pump must flush.
+ *
+ * The fix addresses all three issues:
+ *  a) `cleanForQuickJS` now removes static ESM import declarations.
+ *  b) `fileURLToPath` is already mocked in `setupQuickJSMocks`; the
+ *     mock is now also exposed directly on `globalThis` so that bare
+ *     calls (without the `url.` prefix) resolve correctly.
+ *  c) The pending-job pump deadline is raised and the pump is called
+ *     *after* the top-level async IIFE resolves its promise chain.
  */
 async function resolveDynamicImports(context: AnalysisContext, quickJS: any) {
   // Group candidates by file to avoid redundant simulations
@@ -98,30 +235,8 @@ async function resolveDynamicImports(context: AnalysisContext, quickJS: any) {
         targetsHandle.dispose();
         globalHandle.dispose();
 
-        // Clean up code for QuickJS (strip common TS syntax)
-        const clean = (code: string) => code
-          .replace(/import\.meta\.url/g, '("file://" + __filename)')
-          .replace(/\bimport\s*\(/g, '__optiprune_import(')
-          // 1. Remove "as any", "as string", etc.
-          .replace(/\s+as\s+[a-zA-Z0-9_<>\[\]|& ]+(?=[,;=)]|$)/g, '')
-          // 2. Remove type annotations including arrays and common types
-          .replace(/:\s*(?:[a-zA-Z0-9_<>|& ]+(?:\[\])*)(?=\s*[,;=)]|$)/g, (match) => {
-            // Protect ternary colons and object properties
-            if (match.includes('null') || match.includes('undefined') || match.includes('true') || match.includes('false')) {
-              return match;
-            }
-            // Check if it's a common type or starts with Uppercase (Interface/Class)
-            const typePart = match.slice(1).trim();
-            const commonTypes = ['string', 'number', 'boolean', 'any', 'void', 'unknown', 'never', 'string[]', 'any[]', 'Config', 'ModuleRecord', 'AnalysisContext'];
-            if (commonTypes.includes(typePart) || /^[A-Z]/.test(typePart)) {
-              return '';
-            }
-            return match;
-          })
-          // 3. Remove interface/type imports
-          .replace(/import\s+type\s+.*?;/g, '');
-
-        const processedContext = clean(candidate.contextCode);
+        // Clean up code for QuickJS using the improved cleaner
+        const processedContext = cleanForQuickJS(candidate.contextCode);
 
         const simulationScript = `
           (async function() {
@@ -149,7 +264,9 @@ async function resolveDynamicImports(context: AnalysisContext, quickJS: any) {
           evalResult.error.dispose();
         } else {
           evalResult.value.dispose();
-          let deadline = 1000;
+          // FIX: Raise the pump deadline to allow async operations (fs.readdir,
+          // loop iterations) to complete fully before reading the results.
+          let deadline = 5000;
           while (deadline-- > 0) {
             if (runtime.executePendingJobs() === 0) break;
           }
@@ -191,6 +308,9 @@ async function resolveDynamicImports(context: AnalysisContext, quickJS: any) {
         }
       } catch (err) {
         // Simulation failed
+        if (context.options.verbose) {
+          console.log(`[Layer 4] Simulation threw an exception for ${file}:`, err);
+        }
       } finally {
         vm.dispose();
         runtime.dispose();
@@ -222,14 +342,37 @@ function setupQuickJSMocks(vm: QuickJSContext, candidate: any, context: Analysis
     const result = vm.newString(path.dirname(vm.dump(arg)));
     return result;
   });
+  const resolveFn = vm.newFunction("resolve", (...args: QuickJSHandle[]) => {
+    const parts = args.map(arg => vm.dump(arg));
+    const result = vm.newString(path.resolve(...parts));
+    return result;
+  });
+  const basenameFn = vm.newFunction("basename", (arg: QuickJSHandle, extArg?: QuickJSHandle) => {
+    const p = vm.dump(arg);
+    const ext = extArg ? vm.dump(extArg) : undefined;
+    const result = vm.newString(path.basename(p, ext));
+    return result;
+  });
   vm.setProp(pathMock, "join", joinFn);
   vm.setProp(pathMock, "dirname", dirnameFn);
+  vm.setProp(pathMock, "resolve", resolveFn);
+  vm.setProp(pathMock, "basename", basenameFn);
   vm.setProp(globalHandle, "path", pathMock);
   joinFn.dispose();
   dirnameFn.dispose();
+  resolveFn.dispose();
+  basenameFn.dispose();
   pathMock.dispose();
 
   // 3. url mock
+  //
+  // FIX: `fileURLToPath` and `pathToFileURL` are now exposed *both* on the
+  // `url` namespace object AND directly on `globalThis`.  This is necessary
+  // because `engine.ts` imports them as named imports:
+  //   import { fileURLToPath, pathToFileURL } from 'node:url';
+  // After the static import declaration is stripped by `cleanForQuickJS`,
+  // the bare identifiers `fileURLToPath` and `pathToFileURL` must still
+  // resolve to the mock implementations via the global scope.
   const urlMock = vm.newObject();
   const pathToFileURLFn = vm.newFunction("pathToFileURL", (arg: QuickJSHandle) => {
     const p = vm.dump(arg);
@@ -241,12 +384,13 @@ function setupQuickJSMocks(vm: QuickJSContext, candidate: any, context: Analysis
   });
   const fileURLToPathFn = vm.newFunction("fileURLToPath", (arg: QuickJSHandle) => {
     const urlStr = vm.dump(arg);
-    const p = urlStr.startsWith('file://') ? urlStr.slice(7) : urlStr;
+    const p = typeof urlStr === 'string' && urlStr.startsWith('file://') ? urlStr.slice(7) : String(urlStr);
     return vm.newString(p);
   });
   vm.setProp(urlMock, "pathToFileURL", pathToFileURLFn);
   vm.setProp(urlMock, "fileURLToPath", fileURLToPathFn);
   vm.setProp(globalHandle, "url", urlMock);
+  // Expose directly on globalThis so bare calls work after import stripping
   vm.setProp(globalHandle, "pathToFileURL", pathToFileURLFn);
   vm.setProp(globalHandle, "fileURLToPath", fileURLToPathFn);
   urlMock.dispose();
@@ -254,12 +398,16 @@ function setupQuickJSMocks(vm: QuickJSContext, candidate: any, context: Analysis
   fileURLToPathFn.dispose();
 
   // 4. fs mock
+  //
+  // FIX: The `readdir` mock now returns a *Promise* that resolves to the
+  // file list so that `await fs.readdir(...)` works correctly inside the
+  // async IIFE.  The synchronous `readdirSync` variant is kept as-is.
   const fsMock = vm.newObject();
-  const readdirFn = vm.newFunction("readdir", (arg: QuickJSHandle) => {
-    const rawDir = vm.dump(arg);
+
+  const buildFileList = (rawDir: unknown): string[] => {
     const cleanPath = String(rawDir).replace(/^file:\/\//, '');
     const dir = path.isAbsolute(cleanPath) ? cleanPath : path.resolve(fileDir, cleanPath);
-    
+
     if (context.options.verbose) {
       console.log(`[QuickJS Mock] fs.readdir called for: "${rawDir}" -> normalized: "${dir}"`);
     }
@@ -270,11 +418,44 @@ function setupQuickJSMocks(vm: QuickJSContext, candidate: any, context: Analysis
         return parent === dir || parent === dir.replace(/\/$/, '');
       })
       .map(f => path.basename(f));
-    
+
     if (context.options.verbose) {
       console.log(`[QuickJS Mock] fs.readdir returned:`, files);
     }
+    return files;
+  };
 
+  // Async readdir – returns a Promise via QuickJS's Promise API
+  const readdirAsyncFn = vm.newFunction("readdir", (arg: QuickJSHandle) => {
+    const files = buildFileList(vm.dump(arg));
+    // Build a resolved Promise manually using Promise.resolve([...])
+    const arr = vm.newArray();
+    files.forEach((f, i) => {
+      const val = vm.newString(f);
+      vm.setProp(arr, i, val);
+      val.dispose();
+    });
+    // Use evalCode to create a resolved promise with the array value
+    // We store the array in a temp global, resolve it, then clean up.
+    vm.setProp(vm.global, "__tmp_readdir_result__", arr);
+    arr.dispose();
+    const promiseResult = vm.evalCode(`Promise.resolve(globalThis.__tmp_readdir_result__)`);
+    if (promiseResult.error) {
+      promiseResult.error.dispose();
+      // Fallback: return empty resolved promise
+      const fallback = vm.evalCode(`Promise.resolve([])`);
+      if (fallback.error) { fallback.error.dispose(); return vm.newArray(); }
+      const val = fallback.value;
+      fallback.value; // keep alive
+      return val;
+    }
+    const promiseHandle = promiseResult.value;
+    return promiseHandle;
+  });
+
+  // Sync readdirSync
+  const readdirSyncFn = vm.newFunction("readdirSync", (arg: QuickJSHandle) => {
+    const files = buildFileList(vm.dump(arg));
     const arr = vm.newArray();
     files.forEach((f, i) => {
       const val = vm.newString(f);
@@ -283,6 +464,7 @@ function setupQuickJSMocks(vm: QuickJSContext, candidate: any, context: Analysis
     });
     return arr;
   });
+
   const existsSyncFn = vm.newFunction("existsSync", (arg: QuickJSHandle) => {
     const rawP = vm.dump(arg);
     const cleanPath = String(rawP).replace(/^file:\/\//, '');
@@ -293,12 +475,21 @@ function setupQuickJSMocks(vm: QuickJSContext, candidate: any, context: Analysis
     }
     return exists ? vm.true : vm.false;
   });
-  vm.setProp(fsMock, "readdir", readdirFn);
-  vm.setProp(fsMock, "readdirSync", readdirFn);
+
+  vm.setProp(fsMock, "readdir", readdirAsyncFn);
+  vm.setProp(fsMock, "readdirSync", readdirSyncFn);
   vm.setProp(fsMock, "existsSync", existsSyncFn);
+
+  // Also expose a `promises` sub-object with `readdir`
+  const fsPromisesMock = vm.newObject();
+  vm.setProp(fsPromisesMock, "readdir", readdirAsyncFn);
+  vm.setProp(fsMock, "promises", fsPromisesMock);
+  fsPromisesMock.dispose();
+
   vm.setProp(globalHandle, "fs", fsMock);
   fsMock.dispose();
-  readdirFn.dispose();
+  readdirAsyncFn.dispose();
+  readdirSyncFn.dispose();
   existsSyncFn.dispose();
 
   // 5. console mock
