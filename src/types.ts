@@ -94,6 +94,8 @@ export interface StronglyConnectedComponent {
   id: number;
   modules: string[];
   isCycle: boolean;
+  isReachable?: boolean;
+  isMaybeReachable?: boolean;
 }
 
 export interface ConcolicVerificationResult {

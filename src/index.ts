@@ -396,18 +396,25 @@ let entryPoints = new Set<string>();
   for (const module of modules.values()) {
     if (!context.reachable.has(module.id) && !context.maybeReachable.has(module.id)) {
       const fileComponent = context.components.find((c) => c.modules.includes(module.id));
+      
+      // Enhanced SCC Reachability Check: 
+      // If the file is part of a component that was explicitly marked as unreachable,
+      // we provide a more descriptive message.
+      const isIsolatedComponent = fileComponent && !fileComponent.isReachable && !fileComponent.isMaybeReachable;
+      
       findings.push({
         rule: "unreachable-file",
         severity: "warning",
         confidence: module.hasUnknownDynamicBoundary ? "medium" : "high",
-        message: fileComponent?.isCycle
-          ? "File is part of an isolated circular dependency cycle (" + fileComponent.id + ") and is unreachable from entry points."
+        message: isIsolatedComponent
+          ? `File is part of an isolated ${fileComponent.isCycle ? 'cycle' : 'component'} (#${fileComponent.id}) that is unreachable from any entry point.`
           : "File is not reachable from any entry point.",
         file: module.id,
         evidence: {
           entryPoints: [...context.entryPoints].map((p) => relativeDisplayPath(rootDir, p)),
           componentId: fileComponent?.id,
-          cycleSize: fileComponent?.modules.length,
+          componentSize: fileComponent?.modules.length,
+          isCycle: fileComponent?.isCycle ?? false,
         },
       });
     }

@@ -47,7 +47,7 @@ function resolveEdge(
   }
 
   if (edge.kind === "dynamic-pattern") {
-    const parts = dynamicParts(edge.rawSpecifier);
+    const parts = edge.dynamicPattern || dynamicParts(edge.rawSpecifier);
     if (!parts) {
       edge.resolution = "unknown";
       return;
@@ -481,6 +481,21 @@ export function buildUsedExports(modules: Map<string, ModuleRecord>): Set<string
   return usedExports;
 }
 
+/**
+ * Refines component reachability. A component is reachable if at least one of its
+ * modules is reachable from an entry point.
+ */
+export function calculateComponentReachability(
+  components: StronglyConnectedComponent[],
+  reachable: Set<string>,
+  maybeReachable: Set<string>
+): void {
+  for (const comp of components) {
+    comp.isReachable = comp.modules.some(m => reachable.has(m));
+    comp.isMaybeReachable = comp.modules.some(m => maybeReachable.has(m));
+  }
+}
+
 export function buildGraph(
   modules: Map<string, ModuleRecord>,
   entryPoints: Set<string>,
@@ -489,6 +504,10 @@ export function buildGraph(
   resolveDependencies(modules, options);
   const components = stronglyConnectedComponents(modules);
   const reachability = calculateReachability(modules, entryPoints);
+  
+  // Apply SCC reachability check
+  calculateComponentReachability(components, reachability.reachable, reachability.maybeReachable);
+  
   const usedExports = buildUsedExports(modules);
   return { components, ...reachability, usedExports };
 }
