@@ -485,13 +485,20 @@ export function buildUsedExports(modules: Map<string, ModuleRecord>): Set<string
  * Refines component reachability. A component is reachable if at least one of its
  * modules is reachable from an entry point.
  */
+/**
+ * Refines component reachability. A component is reachable if at least one of its
+ * modules is reachable from an entry point.
+ */
 export function calculateComponentReachability(
   components: StronglyConnectedComponent[],
   reachable: Set<string>,
   maybeReachable: Set<string>
 ): void {
   for (const comp of components) {
+    // A component is reachable if ANY of its modules are in the reachable set
     comp.isReachable = comp.modules.some(m => reachable.has(m));
+    // A component is maybe reachable if ANY of its modules are in the maybeReachable set
+    // OR if it's not reachable but one of its modules is reachable via a maybe-path
     comp.isMaybeReachable = comp.modules.some(m => maybeReachable.has(m));
   }
 }
