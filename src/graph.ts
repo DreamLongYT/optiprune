@@ -450,6 +450,12 @@ export function buildUsedExports(modules: Map<string, ModuleRecord>): Set<string
 
                 if (isRequested || isDefaultRequested) {
                   isUsedViaReExport = true;
+                } else {
+                  // DEEP ALIAS FIX for export *
+                  // Check if any consumer of 'module' uses this name via wildcard or direct name
+                  if (moduleUsage.wildcard || moduleUsage.names.has(exp.exportedAs)) {
+                    isUsedViaReExport = true;
+                  }
                 }
               } else if (edge.kind === 'export-from') {
                 // Explicit re-export: export { x } from 'mod'
@@ -459,9 +465,21 @@ export function buildUsedExports(modules: Map<string, ModuleRecord>): Set<string
                    if (edgeImportName === exp.exportedAs || (exp.isDefault && edgeImportName === 'default')) {
                      // Find the name this is exported as in 'module'
                      const correspondingExport = module.exports.find(e => e.isReExport && e.name === edgeImportName);
-                     if (correspondingExport && usedExports.has(`${module.id}:${correspondingExport.exportedAs}`)) {
-                       isUsedViaReExport = true;
-                       break;
+                     if (correspondingExport) {
+                       const exportKeyInModule = `${module.id}:${correspondingExport.exportedAs}`;
+                       if (usedExports.has(exportKeyInModule)) {
+                         isUsedViaReExport = true;
+                         break;
+                       }
+                       
+                       // DEEP ALIAS FIX: If this re-export is itself re-exported further, 
+                       // the usage might be further down the chain.
+                       // We check if any consumer of 'module' uses this specific exported name.
+                       const moduleUsage = importUsage.get(module.id);
+                       if (moduleUsage && (moduleUsage.wildcard || moduleUsage.names.has(correspondingExport.exportedAs))) {
+                         isUsedViaReExport = true;
+                         break;
+                       }
                      }
                    }
                 }

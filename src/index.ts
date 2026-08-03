@@ -361,10 +361,25 @@ let entryPoints = new Set<string>();
           if (isExportUsed) {
             const usage = importUsage.get(module.id);
             if (usage && usage.reExportOnly) {
-              const hasRealConsumer = Array.from(usage.consumers).some(c => {
-                const cUsage = importUsage.get(c);
-                return context.entryPoints.has(c) || (cUsage && !cUsage.reExportOnly);
-              });
+              // DEEP BARREL FIX: The 'hasRealConsumer' check must be recursive or account 
+              // for long chains of re-export-only modules (Barrels).
+              const visited = new Set<string>();
+              const checkConsumer = (consumerId: string): boolean => {
+                if (visited.has(consumerId)) return false;
+                visited.add(consumerId);
+                
+                if (context.entryPoints.has(consumerId)) return true;
+                if ((context as any).publicEntryPoints?.has(consumerId)) return true;
+                
+                const consumerUsage = importUsage.get(consumerId);
+                if (!consumerUsage) return false;
+                if (!consumerUsage.reExportOnly) return true;
+                
+                // If the consumer is itself re-export only, check ITS consumers
+                return Array.from(consumerUsage.consumers).some(c => checkConsumer(c));
+              };
+
+              const hasRealConsumer = Array.from(usage.consumers).some(c => checkConsumer(c));
               if (!hasRealConsumer) {
                 isEffectivelyUsed = false;
               }
