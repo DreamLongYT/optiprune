@@ -115,6 +115,22 @@ function cleanForQuickJS(code: string): string {
     // 3. Remove "as <Type>" casts (e.g. value as string, node as any)
     .replace(/\s+as\s+[a-zA-Z0-9_<>\[\]|& ]+(?=[,;=)\n]|$)/g, '')
 
+    // 3b. Remove function/method return type annotations before the opening brace.
+    //     e.g. `async run(ctx): Promise<Finding[]> {` -> `async run(ctx) {`
+    //     The existing step 4 regex cannot handle this because its lookahead does
+    //     not include `{`, and the trailing `>` of a generic type is left behind,
+    //     causing a QuickJS SyntaxError ("expecting '{'").
+    .replace(/\)\s*:\s*[A-Za-z_$][A-Za-z0-9_$]*(?:<[^{]*?>)?\s*(?=\{)/g, ') ')
+
+    // 3c. Remove complex parameter type annotations with generics containing commas
+    //     or intersection types, e.g.:
+    //       `(finding: Omit<Finding, "rule"> & { rule?: string })`
+    //     Step 4 only strips simple types and would partially remove `Omit<Finding`
+    //     (stopping at the comma inside the generic), leaving invalid JS like
+    //     `, "rule"> & { rule?: string })`.  This step handles the full pattern
+    //     before step 4 can corrupt it.
+    .replace(/:\s*[A-Za-z_$][A-Za-z0-9_$]*<[^)]*>\s*(?:&\s*\{[^}]*\})?\s*(?=\))/g, '')
+
     // 4. Remove TypeScript type annotations on variable/parameter
     //    declarations, e.g. `: string`, `: Map<string, string[]>`.
     //    We are careful NOT to remove ternary colons or object-literal
@@ -149,15 +165,19 @@ function cleanForQuickJS(code: string): string {
     //    positives on comparison operators.
     .replace(/\b([a-zA-Z_$][\w$]*)<[a-zA-Z0-9_,\s]+>\s*(?=\()/g, '$1')
 
-    // 6. Remove TypeScript access modifiers in class bodies
+    // 6. Remove TypeScript access modifiers and export keywords
+    //    We remove 'export ' but keep the declaration (const/let/var/function/class).
     .replace(/\b(private|protected|public|readonly|override|abstract|declare)\s+/g, '')
+    .replace(/\bexport\s+(?=(?:const|let|var|function|class|async|type|interface|enum)\b)/g, '')
+    // Also handle 'export default'
+    .replace(/\bexport\s+default\s+/g, '')
 
     // 7. Remove interface and type alias declarations
-    .replace(/^\s*(?:export\s+)?(?:interface|type)\s+[A-Za-z_$][\w$]*[\s\S]*?(?=\n(?:export|const|let|var|function|class|async|\/\/|$))/gm, '')
+    .replace(/^\s*(?:interface|type)\s+[A-Za-z_$][\w$]*[\s\S]*?(?=\n(?:export|const|let|var|function|class|async|\/\/|$))/gm, '')
 
     // 8. Remove TypeScript enum declarations (they are not needed for
     //    path simulation)
-    .replace(/^\s*(?:export\s+)?(?:const\s+)?enum\s+[A-Za-z_$][\w$]*\s*\{[\s\S]*?\}\s*$/gm, '');
+    .replace(/^\s*(?:const\s+)?enum\s+[A-Za-z_$][\w$]*\s*\{[\s\S]*?\}\s*$/gm, '');
 }
 
 /**

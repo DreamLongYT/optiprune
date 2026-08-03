@@ -454,29 +454,47 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
               n.type === "ObjectMethod"
             );
             
+            // IMPROVEMENT: Capture both the top-level definitions and the specific 
+            // function body to ensure variables from outer scopes are available 
+            // AND the import logic is actually executed.
+            let topLevelCode = "";
+            const program = stack[0] as any;
+            if (program && program.type === "File" && program.program) {
+              const topNodes = asArray(program.program.body);
+              // Extract top-level declarations (const, let, var, function)
+              topLevelCode = topNodes
+                .filter((n: any) => 
+                  n.type === "VariableDeclaration" || 
+                  n.type === "FunctionDeclaration" ||
+                  n.type === "ExportNamedDeclaration" ||
+                  n.type === "ExportDefaultDeclaration"
+                )
+                .map((n: any) => sourceText.slice(n.start, n.end))
+                .join("\n");
+            }
+
+            let bodyCode = "";
+            
             if (scopeNode && isNode(scopeNode.body)) {
               const body = scopeNode.body as any;
               const start = body.start;
               if (typeof start === "number" && typeof node.start === "number") {
                 const bStart = (body.type === "BlockStatement" ? start + 1 : start) as number;
                 const bEnd = (body.end as number) - (body.type === "BlockStatement" ? 1 : 0);
-                let code = sourceText.slice(bStart, bEnd);
+                bodyCode = sourceText.slice(bStart, bEnd);
                 
-                // Prepend parameters as variables so they are defined (even if undefined)
+                // Prepend parameters
                 const params = (scopeNode as any).params;
                 if (Array.isArray(params)) {
                   const paramNames = params.flatMap(p => bindingNames(p));
                   if (paramNames.length > 0) {
-                    code = `var ${paramNames.join(', ')};\n${code}`;
+                    bodyCode = `var ${paramNames.join(', ')};\n${bodyCode}`;
                   }
                 }
-                contextCode = code;
               }
             }
-            
-            if (!contextCode) {
-              contextCode = sourceText.slice(Math.max(0, (node.start as number) - 500), (node.end as number) + 500);
-            }
+
+            contextCode = `${topLevelCode}\n\n// --- Function Body ---\n${bodyCode || expressionText}`;
 
             dynamicImportCandidates.push({
               file,

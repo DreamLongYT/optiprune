@@ -30,4 +30,37 @@ describe('String Interpolation Dynamic Import', () => {
     );
     expect(unknownImport, 'Should not have unknown-dynamic-import warning').toBeUndefined();
   });
+
+  it('should handle data-flow with variables in dynamic imports (Nightmare Case)', async () => {
+    const results = await analyze({
+      rootDir,
+      entryPoints: [path.join(fixtureDir, 'nightmare.ts')],
+      reportUnusedExports: true,
+      verbose: true,
+      layers: { skip3: false, skip4: false }
+    });
+    
+    // Check if my-plugin.ts is resolved despite the variable
+    const unusedExport = results.findings.find(f => 
+      f.rule === 'unused-export' && f.file.includes('my-plugin.ts')
+    );
+    
+    expect(unusedExport, 'my-plugin.ts should be reached via variable').toBeUndefined();
+  });
+
+  it('should handle outer-scope variables in dynamic imports', async () => {
+    const results = await analyze({
+      rootDir,
+      entryPoints: [path.join(fixtureDir, 'outer-scope.ts')],
+      reportUnusedExports: true,
+      verbose: true,
+      layers: { skip3: false, skip4: false }
+    });
+    
+    const unusedExport = results.findings.find(f => 
+      f.rule === 'unused-export' && f.file.includes('my-plugin.ts')
+    );
+    
+    expect(unusedExport, 'my-plugin.ts should be reached via outer-scope variable').toBeUndefined();
+  });
 });
