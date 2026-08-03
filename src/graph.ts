@@ -442,13 +442,13 @@ export function buildUsedExports(modules: Map<string, ModuleRecord>): Set<string
               let isUsedViaReExport = false;
 
               if (edge.kind === 'export-all') {
-                // If the barrel is used, its wildcard re-exports are potentially used
-                // We check if any consumer of the barrel is requesting a name that isn't in the barrel itself
-                const barrelExports = new Set(module.exports.map(e => e.exportedAs));
-                const requestedFromBarrel = Array.from(moduleUsage.names);
+                // PRECISION FIX: Only mark this specific export as used if it's actually requested from the barrel
+                const isRequested = moduleUsage.wildcard || moduleUsage.names.has(exp.exportedAs);
                 
-                const isRequested = requestedFromBarrel.some(name => !barrelExports.has(name)) || moduleUsage.wildcard;
-                if (isRequested) {
+                // Also check if it's a default export being requested via a name (not common for export *)
+                const isDefaultRequested = exp.isDefault && moduleUsage.names.has('default');
+
+                if (isRequested || isDefaultRequested) {
                   isUsedViaReExport = true;
                 }
               } else if (edge.kind === 'export-from') {

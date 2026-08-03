@@ -273,30 +273,38 @@ export function expandEntryPatterns(
 ): string[] {
   const matches = new Set<string>();
   const normalizedRoot = normalizeAbsolute(rootDir);
-  
+  const normalizedSourceFiles = sourceFiles.map(f => normalizeAbsolute(f));
+
   for (const pattern of patterns) {
-    const direct = normalizeAbsolute(resolve(rootDir, pattern));
-    if (sourceFiles.includes(direct)) {
+    // 1. Direct absolute or relative path resolution
+    const direct = normalizeAbsolute(isAbsolute(pattern) ? pattern : resolve(rootDir, pattern));
+    
+    if (normalizedSourceFiles.includes(direct)) {
       matches.add(direct);
       continue;
     }
-    
-    let p = toPosix(pattern).replace(/^\.\//, "");
+
+    // 2. Clean glob pattern (strip leading ./ or drive letter if relative to root)
+    let p = toPosix(pattern);
     if (isAbsolute(p)) {
       p = patheRelative(normalizedRoot, p);
     }
-    
+    p = p.replace(/^\.\//, "");
+
     const matcher = globToRegExp(p);
-    for (const sourceFile of sourceFiles) {
-      const relPath = patheRelative(normalizedRoot, sourceFile);
+    
+    for (const sourceFile of normalizedSourceFiles) {
+      // Stripping leading ./ from relPath ensures "^src\/..." regex matches cleanly
+      const relPath = toPosix(patheRelative(normalizedRoot, sourceFile)).replace(/^\.\//, "");
+      
       if (matcher.test(relPath)) {
         matches.add(sourceFile);
       }
     }
   }
+
   return [...matches].sort((left, right) => left.localeCompare(right));
 }
-
 export async function discoverPackageEntryPatterns(rootDir: string): Promise<string[]> {
   const packageFile = join(rootDir, "package.json");
   try {

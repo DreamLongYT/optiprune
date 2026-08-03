@@ -242,7 +242,8 @@ export async function analyzeLayer6(context: AnalysisContext): Promise<Finding[]
         const CORE_TOOLING = [
           'typescript', 'ts-node', 'tsx', 'babel', 'swc',
           'eslint', 'prettier', 'husky', 'lint-staged',
-          'vitest', 'jest', 'cypress', 'playwright'
+          'vitest', 'jest', 'cypress', 'playwright',
+          '@types/node', '@types/react', '@types/react-dom', '@types/jest'
         ];
         
         const isCoreTool = CORE_TOOLING.some(p => dep.includes(p));

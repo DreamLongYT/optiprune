@@ -43,7 +43,7 @@ import type {
 import { CONFIDENCE_RANK } from "./types.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = (await readJsonFile(path.join(__dirname, "..", "package.json"))) as { version?: string } | null;
-const VERSION = pkg?.version ?? "1.8.1";
+const VERSION = pkg?.version ?? "1.8.2";
 
 import { DEFAULT_CONFIG, loadConfig, mergeConfig } from "./config-loader.js";
 

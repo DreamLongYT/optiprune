@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import path from "pathe";
 import { Command } from "commander";
 const program = new Command();
 import { analyze, shouldFail } from "./index.js";
@@ -7,11 +8,13 @@ import { readJsonFile } from "./fs-utils.js";
 import { formatTerminal, formatSarif } from "./reporters.js";
 import type { AnalyzerOptions, ResolvedOptions } from "./types.js";
 
-const PKG_JSON = await readJsonFile("package.json") as { version?: string } | null;
+import { fileURLToPath } from "node:url";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PKG_JSON = await readJsonFile(path.join(__dirname, "..", "package.json")) as { version?: string } | null;
 
 program
   .name("optiprune")
-  .version(PKG_JSON && typeof PKG_JSON.version === "string" ? PKG_JSON.version : "1.8.1")
+  .version(PKG_JSON && typeof PKG_JSON.version === "string" ? PKG_JSON.version : "1.8.2")
   .description("Finds dead code in TypeScript/JavaScript projects.")
   .option("-r, --rootDir <path>", "Root directory of the project", process.cwd())
   .option("-e, --entry <patterns...>", "Entry point patterns (glob or file paths)", [])
