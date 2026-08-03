@@ -220,6 +220,32 @@ async function resolveDynamicImports(context: AnalysisContext, quickJS: any) {
         const targetsHandle = vm.newArray();
         vm.setProp(globalHandle, "__OPTIPRUNE_TARGETS__", targetsHandle);
 
+        // Define a resilient mock creator in the VM
+        const resilientMockCreator = vm.evalCode(`
+          (function() {
+            globalThis.__create_resilient_mock = function() {
+              const handler = {
+                get(target, prop) {
+                  if (prop === 'then') return undefined;
+                  if (prop === 'toJSON') return () => ({});
+                  // Return another proxy for any property access
+                  return new Proxy(function() {}, handler);
+                },
+                apply() {
+                  // Return another proxy for any function call
+                  return new Proxy(function() {}, handler);
+                }
+              };
+              return new Proxy({}, handler);
+            };
+          })()
+        `);
+        if (resilientMockCreator.error) {
+          resilientMockCreator.error.dispose();
+        } else {
+          resilientMockCreator.value.dispose();
+        }
+
         const importMockFn = vm.newFunction("__optiprune_import", (arg: QuickJSHandle) => {
           const target = vm.dump(arg);
           const currentTargets = vm.getProp(globalHandle, "__OPTIPRUNE_TARGETS__");
@@ -228,7 +254,12 @@ async function resolveDynamicImports(context: AnalysisContext, quickJS: any) {
           vm.setProp(currentTargets, len, vm.newString(String(target)));
           lenHandle.dispose();
           currentTargets.dispose();
-          return vm.newObject(); // Dummy module
+          
+          // Return a resilient mock instead of a plain empty object
+          const createFn = vm.getProp(vm.global, "__create_resilient_mock");
+          const mock = vm.callFunction(createFn, vm.undefined);
+          createFn.dispose();
+          return mock;
         });
         vm.setProp(globalHandle, "__optiprune_import", importMockFn);
         importMockFn.dispose();
