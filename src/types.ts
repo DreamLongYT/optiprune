@@ -28,6 +28,11 @@ export interface ParseDiagnostic {
   recovered: boolean;
 }
 
+export interface ExportMember {
+  name: string;
+  location?: Range;
+}
+
 export interface ExportRecord {
   name: string;
   exportedAs: string;
@@ -38,6 +43,7 @@ export interface ExportRecord {
   isTypeOnly?: boolean;
   isExternalContract?: boolean; // Added for Layer 5: Schema Alignment
   localReferences?: string[]; // Added for Fix 3: Symbol Propagation
+  members?: ExportMember[]; // Added for Member-Level Analysis
 }
 
 export interface DependencyEdge {
@@ -75,6 +81,7 @@ export interface ModuleRecord {
   scannedDirectories: string[];
   dynamicImportCandidates: DynamicImportCandidate[];
   localSymbolMap?: Record<string, string[]>; // Added for Fix 3: Internal symbol dependencies
+  localTypeMap?: Record<string, string>; // Added for Member-Level Analysis: variableName -> typeName
 }
 
 export interface WorkspacePackage {
@@ -125,6 +132,7 @@ export interface Finding {
   rule:
     | "unreachable-file"
     | "unused-export"
+    | "unused-member"
     | "unreachable-statement"
     | "constant-condition"
     | "contradictory-guard"
@@ -262,6 +270,7 @@ export interface AnalysisContext {
   hasReachableUnknownDynamicBoundary: boolean;
   components: StronglyConnectedComponent[];
   usedExports: Set<string>;
+  usedMembers: Set<string>; // Added for Member-Level Analysis
   candidateBranches: CandidateBranch[];
   dynamicImportCandidates: DynamicImportCandidate[];
   monorepo?: MonorepoGraph;

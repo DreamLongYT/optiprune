@@ -1,5 +1,6 @@
 import path from "pathe";
 import { resolveDynamicPattern, resolveLocalSpecifier } from "./fs-utils.js";
+import { walkAst } from "./parser.js";
 import type {
   AnalysisContext,
   DependencyEdge,
@@ -14,11 +15,13 @@ export interface GraphBuildResult {
   maybeReachable: Set<string>;
   hasReachableUnknownDynamicBoundary: boolean;
   usedExports: Set<string>;
+  usedMembers: Set<string>;
 }
 
 export interface ImportUsage {
   consumers: Set<string>;
   names: Set<string>;
+  memberAccess: Map<string, Set<string>>; // Added for Member-Level Analysis: exportName -> Set of memberNames
   wildcard: boolean;
   reExportOnly: boolean;
 }
@@ -353,27 +356,57 @@ export function calculateReachability(
 export function buildImportUsage(modules: Map<string, ModuleRecord>): Map<string, ImportUsage> {
   const usage = new Map<string, ImportUsage>();
   for (const module of modules.values()) {
+    // Member Access Tracking within the module
+    const localMemberAccess = new Map<string, Set<string>>();
+    if (module.ast) {
+      walkAst(module.ast, (node: any, stack: any[]) => {
+        // 1. Track Member Expressions (e.g., Status.Active, user.id)
+        if (node.type === "MemberExpression" && node.object.type === "Identifier" && !node.computed) {
+          const objectName = node.object.name;
+          const propertyName = node.property.name || node.property.value;
+          if (propertyName) {
+            // Track direct access (Status.Active)
+            if (!localMemberAccess.has(objectName)) localMemberAccess.set(objectName, new Set());
+            localMemberAccess.get(objectName)!.add(propertyName);
+
+            // Track type-aware access (user.id where user is of type User)
+            const typeName = module.localTypeMap?.[objectName];
+            if (typeName) {
+              if (!localMemberAccess.has(typeName)) localMemberAccess.set(typeName, new Set());
+              localMemberAccess.get(typeName)!.add(propertyName);
+            }
+          }
+        }
+        
+
+      });
+    }
+
     for (const edge of module.edges) {
-      // We count all imports for usage, but we could later distinguish them if needed.
-      // For now, an import (even type-only) marks the export as used.
       for (const target of edgeTargets(edge)) {
         const current = usage.get(target) ?? { 
           consumers: new Set<string>(), 
           names: new Set<string>(), 
+          memberAccess: new Map<string, Set<string>>(),
           wildcard: false,
           reExportOnly: true 
         };
         current.consumers.add(module.id);
-        
         const isReExport = edge.kind === "export-all" || edge.kind === "export-from";
         if (!isReExport) {
           current.reExportOnly = false;
         }
-
         for (const name of edge.importedNames) {
           current.names.add(name);
           if (name === "*") {
             current.wildcard = true;
+          }
+          
+          // Map local member access to the imported name
+          const accessed = localMemberAccess.get(name);
+          if (accessed) {
+            if (!current.memberAccess.has(name)) current.memberAccess.set(name, new Set());
+            for (const m of accessed) current.memberAccess.get(name)!.add(m);
           }
         }
         if (edge.kind === "dynamic-pattern") {
@@ -389,14 +422,13 @@ export function buildImportUsage(modules: Map<string, ModuleRecord>): Map<string
   return usage;
 }
 
-export function buildUsedExports(modules: Map<string, ModuleRecord>): Set<string> {
+export function buildUsedExports(modules: Map<string, ModuleRecord>): { usedExports: Set<string>, usedMembers: Set<string> } {
   const usedExports = new Set<string>();
+  const usedMembers = new Set<string>();
   const importUsage = buildImportUsage(modules);
-  
   // 1. Initial pass: Mark exports used by non-re-export imports
   // and resolve explicit re-exports (export { x } from 'mod')
   const worklist: Array<{ moduleId: string, name: string }> = [];
-
   for (const [moduleId, usage] of importUsage.entries()) {
     const module = modules.get(moduleId);
     if (!module) continue;
@@ -409,10 +441,21 @@ export function buildUsedExports(modules: Map<string, ModuleRecord>): Set<string
 
       // If it's a direct import (not a re-export)
       if (!usage.reExportOnly) {
-        if (usage.wildcard || usage.names.has(exp.exportedAs) || (exp.isDefault && usage.names.has('default'))) {
+        const isRequested = usage.wildcard || usage.names.has(exp.exportedAs) || (exp.isDefault && usage.names.has('default'));
+        if (isRequested) {
           if (!usedExports.has(`${moduleId}:${exp.exportedAs}`)) {
             usedExports.add(`${moduleId}:${exp.exportedAs}`);
             worklist.push({ moduleId, name: exp.exportedAs });
+          }
+          
+          // Track member access
+          const accessed = usage.memberAccess.get(exp.exportedAs);
+          
+          if (accessed) {
+            for (const m of accessed) {
+              
+              usedMembers.add(`${moduleId}:${exp.exportedAs}:${m}`);
+            }
           }
         }
       }
@@ -488,6 +531,14 @@ export function buildUsedExports(modules: Map<string, ModuleRecord>): Set<string
               if (isUsedViaReExport) {
                 usedExports.add(exportKey);
                 changed = true;
+
+                // PROPAGATE MEMBER ACCESS THROUGH RE-EXPORTS
+                const accessedInModule = moduleUsage.memberAccess.get(edge.kind === 'export-all' ? exp.exportedAs : (module.exports.find(e => e.isReExport && e.name === exp.exportedAs)?.exportedAs || ""));
+                if (accessedInModule) {
+                  for (const m of accessedInModule) {
+                    usedMembers.add(`${targetId}:${exp.exportedAs}:${m}`);
+                  }
+                }
               }
             }
           }
@@ -537,7 +588,7 @@ export function buildUsedExports(modules: Map<string, ModuleRecord>): Set<string
     }
   }
 
-  return usedExports;
+  return { usedExports, usedMembers };
 }
 
 /**
@@ -574,8 +625,8 @@ export function buildGraph(
   // Apply SCC reachability check
   calculateComponentReachability(components, reachability.reachable, reachability.maybeReachable);
   
-  const usedExports = buildUsedExports(modules);
-  return { components, ...reachability, usedExports };
+  const { usedExports, usedMembers } = buildUsedExports(modules);
+  return { components, ...reachability, usedExports, usedMembers };
 }
 
 export function contextWithGraph(
@@ -593,6 +644,7 @@ export function contextWithGraph(
     hasReachableUnknownDynamicBoundary: graph.hasReachableUnknownDynamicBoundary,
     components: graph.components,
     usedExports: graph.usedExports,
+    usedMembers: graph.usedMembers,
     candidateBranches: [],
     dynamicImportCandidates: Array.from(modules.values()).flatMap(m => m.dynamicImportCandidates || []),
   };

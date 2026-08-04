@@ -137,7 +137,7 @@ function addExport(
   exportedAs: string,
   node: AstNode,
   identifierNode?: AstNode,
-  options: Partial<Pick<ExportRecord, "name" | "isDefault" | "isReExport" | "isWildcard" | "isTypeOnly">> = {},
+  options: Partial<Pick<ExportRecord, "name" | "isDefault" | "isReExport" | "isWildcard" | "isTypeOnly" | "members">> = {},
 ): void {
   const candidate: ExportRecord = {
     name: options.name ?? exportedAs,
@@ -147,6 +147,7 @@ function addExport(
     isWildcard: options.isWildcard ?? false,
     isTypeOnly: options.isTypeOnly ?? false,
   };
+  if (options.members) candidate.members = options.members;
   // Use precise identifier node location if provided, otherwise default to full node
   const location = positionRange(identifierNode) ?? positionRange(node);
   if (location) {
@@ -306,6 +307,7 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
   const scannedDirectories: string[] = [];
   const dynamicImportCandidates: DynamicImportCandidate[] = [];
   const localSymbolDeps = new Map<string, Set<string>>();
+  const localTypeMap: Record<string, string> = {};
 
   const getActiveDeclaration = (s: AstNode[]) => {
     for (let i = s.length - 1; i >= 0; i--) {
@@ -325,6 +327,20 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
   walk(ast, (node, stack) => {
     // Compatibility: Map Yuku attached comments to leadingComments/trailingComments
     const yukuNode = node as any;
+
+    // Track local variable types from annotations
+    if (node.type === "VariableDeclarator") {
+      const id = yukuNode.id as any;
+      if (id && id.type === "Identifier") {
+        const ta = id.typeAnnotation;
+        if (ta && ta.type === "TSTypeAnnotation" && ta.typeAnnotation?.type === "TSTypeReference") {
+          const typeName = nodeIdentifierName(ta.typeAnnotation.typeName);
+          if (typeName) {
+            localTypeMap[id.name] = typeName;
+          }
+        }
+      }
+    }
     if (Array.isArray(yukuNode.comments)) {
       yukuNode.leadingComments = yukuNode.comments
         .filter((c: any) => c.position === "before")
@@ -402,7 +418,39 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
             declaration.type === "TSTypeAliasDeclaration" ||
             (declaration.type === "TSEnumDeclaration" && (declaration as any).const === true) ||
             node.exportKind === "type";
-          addExport(exportsList, nodeIdentifierName(declaration.id) ?? "unknown", node, declaration.id as AstNode, { isTypeOnly: isType });
+
+          // Member Extraction for Enums, Interfaces, and Classes
+          const members: any[] = [];
+          const decl = declaration as any;
+          if (decl.type === "TSEnumDeclaration") {
+            const enumMembers = decl.members || decl.body?.members || [];
+            for (const member of asArray(enumMembers)) {
+              const m = member as any;
+              const name = nodeIdentifierName(m.id) || nodeStringValue(m.id);
+              if (name) members.push({ name, location: positionRange(m) });
+            }
+          } else if (decl.type === "TSInterfaceDeclaration") {
+            const body = decl.body?.body || [];
+            for (const member of asArray(body)) {
+              const m = member as any;
+              const name = nodeIdentifierName(m.key) || nodeStringValue(m.key);
+              if (name) members.push({ name, location: positionRange(m) });
+            }
+          } else if (decl.type === "ClassDeclaration") {
+            const body = decl.body?.body || [];
+            for (const member of asArray(body)) {
+              const m = member as any;
+              if (m.type === "MethodDefinition" || m.type === "PropertyDefinition" || m.type === "ClassProperty" || m.type === "ClassMethod") {
+                const name = nodeIdentifierName(m.key) || nodeStringValue(m.key);
+                if (name && name !== "constructor") members.push({ name, location: positionRange(m) });
+              }
+            }
+          }
+
+          addExport(exportsList, nodeIdentifierName(decl.id) ?? "unknown", node, decl.id as AstNode, { 
+            isTypeOnly: isType,
+            members: members.length > 0 ? members : undefined
+          } as any);
         } else if (declaration.type === "VariableDeclaration") {
           for (const declarator of asArray(declaration.declarations)) {
             if (isNode(declarator)) {
@@ -649,6 +697,7 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
     scannedDirectories,
     dynamicImportCandidates,
     localSymbolMap,
+    localTypeMap,
   };
   return module;
 }
@@ -776,7 +825,7 @@ export function parseModule(sourceText: string, file: string): ModuleRecord {
   try {
     // RESILIENCE FIX: Handle literal \n sequences often found in generated tests or copy-pastes
     // This ensures the parser doesn't choke on "Invalid Unicode escape sequence"
-    if (sourceText.includes('\\n') && !sourceText.includes('\n')) {
+    if (sourceText.includes('\\n')) {
       sourceText = sourceText.replace(/\\n/g, '\n');
     }
 

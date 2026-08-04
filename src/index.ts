@@ -404,6 +404,24 @@ export async function analyze(options: AnalyzerOptions): Promise<AnalysisReport>
               ...(exp.location && { location: exp.location }),
               evidence: { exportName: exp.exportedAs },
             });
+          } else if (isEffectivelyUsed && exp.members && exp.members.length > 0) {
+            // Check for unused members
+            for (const member of exp.members) {
+              // We check both the internal name and the exported name
+              const memberKey = `${module.id}:${exp.exportedAs}:${member.name}`;
+              const internalKey = `${module.id}:${exp.name}:${member.name}`;
+              if (!context.usedMembers.has(memberKey) && !context.usedMembers.has(internalKey)) {
+                findings.push({
+                  rule: "unused-member",
+                  severity: "warning",
+                  confidence: confidence,
+                  message: `Member '${member.name}' of export '${exp.exportedAs}' is never referenced.`,
+                  file: module.id,
+                  ...(member.location && { location: member.location }),
+                  evidence: { exportName: exp.exportedAs, memberName: member.name },
+                });
+              }
+            }
           }
         }
       }

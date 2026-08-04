@@ -410,7 +410,7 @@ export async function readJsonFile<T>(candidate: string): Promise<T | undefined>
 export async function findNearestConfig(startDirectory: string): Promise<string | undefined> {
   let current = normalizeAbsolute(startDirectory);
   while (true) {
-    const candidate = join(current, "deadcode-sentinel.config.json");
+    const candidate = join(current, "optiprune.config.json");
     if (await fileExists(candidate)) {
       return candidate;
     }
