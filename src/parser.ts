@@ -374,6 +374,15 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
             if (!localSymbolDeps.has(active)) localSymbolDeps.set(active, new Set());
             localSymbolDeps.get(active)!.add(node.name as string);
           }
+          
+          // INTERNAL REFERENCE FIX: Track all identifier usages to detect 
+          // usage of exports within the same file.
+          // We only track it if it's NOT a top-level declaration.
+          const isTopLevelDecl = stack.some(n => n.type === "ExportNamedDeclaration" || n.type === "ExportDefaultDeclaration") && stack.length <= 4;
+          if (!isTopLevelDecl) {
+            if (!localSymbolDeps.has("*")) localSymbolDeps.set("*", new Set());
+            localSymbolDeps.get("*")!.add(node.name as string);
+          }
         }
       }
     }

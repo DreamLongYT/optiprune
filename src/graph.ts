@@ -548,13 +548,27 @@ export function buildUsedExports(modules: Map<string, ModuleRecord>): { usedExpo
   }
 
   // 3. Local Symbol Propagation (Fix 3: TypeScript False Positives)
-  // If an export A is used, any local symbol B it references must also be considered used.
-  // If B is itself an export, we mark it as used.
+  // This handles two things:
+  // A) If an export A is used, any local symbol B it references must also be used.
+  // B) INTERNAL REFERENCE FIX: If ANY code in the file uses an export, it's used.
   changed = true;
   while (changed) {
     changed = false;
     for (const module of modules.values()) {
       const localDeps = module.localSymbolMap || {};
+      
+      // INTERNAL REFERENCE FIX: Symbols used anywhere in the file (captured under '*')
+      const allInternalRefs = localDeps["*"] || [];
+      for (const refName of allInternalRefs) {
+        const internalExport = module.exports.find(e => e.name === refName);
+        if (internalExport) {
+          const internalKey = `${module.id}:${internalExport.exportedAs}`;
+          if (!usedExports.has(internalKey)) {
+            usedExports.add(internalKey);
+            changed = true;
+          }
+        }
+      }
       
       for (const exp of module.exports) {
         const exportKey = `${module.id}:${exp.exportedAs}`;

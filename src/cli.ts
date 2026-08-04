@@ -47,7 +47,17 @@ program
       if (options.sarif) {
         console.log(formatSarif(report));
       } else if (options.json) {
-        console.log(JSON.stringify(report, null, 2));
+        try {
+          // Use a replacer to handle potential BigInt or other non-serializable types if any
+          const json = JSON.stringify(report, (key, value) => 
+            typeof value === 'bigint' ? value.toString() : value, 
+            2
+          );
+          console.log(json);
+        } catch (jsonError) {
+          console.error("Failed to generate JSON output:", jsonError);
+          process.exit(1);
+        }
       } else {
         console.log(formatTerminal(report));
       }
