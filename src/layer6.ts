@@ -240,7 +240,7 @@ export async function analyzeLayer6(context: AnalysisContext): Promise<Finding[]
         // Refined Whitelist for config/tooling packages
         // We only whitelist very core tools that are almost always implicitly used
         const CORE_TOOLING = [
-          'typescript', 'ts-node', 'tsx', 'babel', 'swc',
+          'optiprune', 'typescript', 'ts-node', 'tsx', 'babel', 'swc',
           'eslint', 'prettier', 'husky', 'lint-staged',
           'vitest', 'jest', 'cypress', 'playwright',
           '@types/node', '@types/react', '@types/react-dom', '@types/jest'
