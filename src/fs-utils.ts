@@ -393,7 +393,11 @@ export async function readJsonFile<T>(candidate: string): Promise<T | undefined>
     rawContent = rawContent.trim();
 
     try {
-      return JSON.parse(rawContent) as T;
+      // Strip comments for JSONC support (common in tsconfig.json)
+      const stripped = rawContent
+        .replace(/\/\/.*$/gm, "") // Strip single line comments
+        .replace(/\/\*[\s\S]*?\*\//g, ""); // Strip multi-line comments
+      return JSON.parse(stripped) as T;
     } catch {
       // Fallback for literal escaped strings in synthetic test fixtures
       const sanitized = rawContent

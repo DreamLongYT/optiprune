@@ -394,7 +394,7 @@ export async function analyze(options: AnalyzerOptions): Promise<AnalysisReport>
             }
           }
 
-          if (!isEffectivelyUsed && exp.exportedAs !== "default") {
+          if (!isEffectivelyUsed && exp.exportedAs !== "default" && exp.exportedAs !== "*") {
             findings.push({
               rule: "unused-export",
               severity: "warning",
