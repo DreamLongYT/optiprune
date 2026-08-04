@@ -308,6 +308,7 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
   const dynamicImportCandidates: DynamicImportCandidate[] = [];
   const localSymbolDeps = new Map<string, Set<string>>();
   const localTypeMap: Record<string, string> = {};
+  const localReferences = new Set<string>();
 
   const getActiveDeclaration = (s: AstNode[]) => {
     for (let i = s.length - 1; i >= 0; i--) {
@@ -362,7 +363,7 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
       if (parent) {
         let isRef = true;
         // Definitions/Names of exports are NOT references to other symbols
-        if ((parent.type === "FunctionDeclaration" || parent.type === "ClassDeclaration" || parent.type === "TSInterfaceDeclaration" || parent.type === "TSTypeAliasDeclaration" || parent.type === "TSEnumDeclaration" || parent.type === "VariableDeclarator") && parent.id === node) isRef = false;
+
         if (parent.type === "ExportSpecifier" && (parent.local === node || parent.exported === node)) isRef = false;
         if (parent.type === "ExportDefaultDeclaration" && parent.declaration === node) isRef = false;
         if (parent.type === "ImportSpecifier" || parent.type === "ImportDefaultSpecifier" || parent.type === "ImportNamespaceSpecifier") isRef = false;
@@ -372,6 +373,9 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
         if (parent.type === "ObjectProperty" && parent.key === node && !parent.computed) isRef = false;
         if (parent.type === "TSPropertySignature" && parent.key === node) isRef = false;
         if (parent.type === "TSMethodSignature" && parent.key === node) isRef = false;
+
+        // Definitions are NOT references to the symbol itself
+        if ((parent.type === "FunctionDeclaration" || parent.type === "ClassDeclaration" || parent.type === "TSInterfaceDeclaration" || parent.type === "TSTypeAliasDeclaration" || parent.type === "TSEnumDeclaration" || parent.type === "VariableDeclarator") && parent.id === node) isRef = false;
 
         if (isRef) {
           const active = getActiveDeclaration(stack);
@@ -386,6 +390,7 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
             if (!localSymbolDeps.has("")) localSymbolDeps.set("", new Set());
             localSymbolDeps.get("")!.add(node.name as string);
           }
+          localReferences.add(node.name as string);
         }
       }
     }
@@ -710,6 +715,7 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
     dynamicImportCandidates,
     localSymbolMap,
     localTypeMap,
+    localReferences: Array.from(localReferences),
   };
   return module;
 }

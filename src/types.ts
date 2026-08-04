@@ -82,6 +82,7 @@ export interface ModuleRecord {
   dynamicImportCandidates: DynamicImportCandidate[];
   localSymbolMap?: Record<string, string[]>; // Added for Fix 3: Internal symbol dependencies
   localTypeMap?: Record<string, string>; // Added for Member-Level Analysis: variableName -> typeName
+  localReferences?: string[]; // Added for Fix: Track local references within the module
 }
 
 export interface WorkspacePackage {

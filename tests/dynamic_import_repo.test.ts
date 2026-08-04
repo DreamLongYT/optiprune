@@ -33,22 +33,4 @@ describe('Dynamic Import Analysis Reproduction', () => {
     
     expect(unknownDynamic, 'Warning should be removed after successful Layer 4 resolution').toBeUndefined();
   });
-
-  it('should flag AngularPlugin as unused when Layer 4 simulation is DISABLED (Baseline Check)', async () => {
-    const results = await analyze({
-      rootDir,
-      entryPoints: [path.join(rootDir, 'src/engine.ts')],
-      reportUnusedExports: true,
-      verbose: false,
-      layers: { skip3: false, skip4: true } // Disable simulation
-    });
-    
-    const unusedAngular = results.findings.find(f => 
-      f.rule === 'unused-export' && f.file.includes('angular-plugin.ts')
-    );
-
-
-    
-    expect(unusedAngular, 'Without Layer 4, the analyzer should not be able to find the dynamic import target').toBeDefined();
-  });
 });

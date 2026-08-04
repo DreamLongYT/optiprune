@@ -412,10 +412,25 @@ export function buildImportUsage(modules: Map<string, ModuleRecord>): Map<string
         if (edge.kind === "dynamic-pattern") {
           current.wildcard = true;
         }
-        if (edge.kind === "export-all") {
-          current.wildcard = true;
-        }
         usage.set(target, current);
+      }
+    }
+
+    // Mark exports as used if they are referenced locally within the module
+    for (const exportRecord of module.exports) {
+      if (module.localReferences && module.localReferences.includes(exportRecord.name)) {
+        const current = usage.get(module.id) ?? {
+          consumers: new Set<string>(),
+          names: new Set<string>(),
+          memberAccess: new Map<string, Set<string>>(),
+          wildcard: false,
+          reExportOnly: true
+        };
+        current.names.add(exportRecord.exportedAs);
+        // We don't set reExportOnly = false here because local usage 
+        // within an entry point shouldn't protect OTHER exports in the same file.
+        // The export is already marked as used via current.names.add().
+        usage.set(module.id, current);
       }
     }
   }

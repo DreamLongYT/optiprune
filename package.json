@@ -1,6 +1,6 @@
 {
   "name": "optiprune",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "description": "Resilient static dead-code analyzer for TypeScript and JavaScript workspaces.",
   "type": "module",
   "main": "./dist/index.js",
