@@ -1,4 +1,5 @@
-import { getQuickJS, QuickJSContext, QuickJSHandle } from "quickjs-emscripten";
+import { getQuickJS, QuickJSContext, QuickJSHandle, QuickJSRuntime } from "quickjs-emscripten";
+import { transform } from "esbuild";
 import type { AnalysisContext, Finding, ConcolicVerificationResult } from "./types.js";
 import { performance } from "node:perf_hooks";
 import path from "pathe";
@@ -98,86 +99,131 @@ export async function analyzeLayer4(context: AnalysisContext): Promise<Finding[]
  */
 function cleanForQuickJS(code: string): string {
   return code
-    // 0. Remove static ESM import declarations entirely (they are not
-    //    needed for path simulation and QuickJS cannot parse them).
-    //    Handles single-line and multi-line forms.
-    .replace(/^\s*import\s+type\s+.*?;?\s*$/gm, '')
-    .replace(/^\s*import\s+[\s\S]*?from\s+['"][^'"]*['"]\s*;?\s*$/gm, '')
-    // Also remove bare side-effect imports: import 'foo';
-    .replace(/^\s*import\s+['"][^'"]*['"]\s*;?\s*$/gm, '')
-
-    // 1. Rewrite import.meta.url before replacing import(
+    // Static ESM imports cannot be evaluated in a QuickJS script. Dynamic
+    // imports are intentionally preserved until they are replaced below.
+    .replace(/^\s*import(?!\s*\()\s+(?:type\s+)?[\s\S]*?\s+from\s+['"][^'"]+['"]\s*;?\s*$/gm, "")
+    .replace(/^\s*import(?!\s*\()\s*['"][^'"]+['"]\s*;?\s*$/gm, "")
+    // Re-exports are likewise irrelevant for path-construction simulation.
+    .replace(/^\s*export\s+type\s*\{[\s\S]*?\}\s*(?:from\s+['"][^'"]+['"])?\s*;?\s*$/gm, "")
+    .replace(/^\s*export\s*\{[\s\S]*?\}\s*(?:from\s+['"][^'"]+['"])?\s*;?\s*$/gm, "")
+    .replace(/^\s*export\s+\*\s+from\s+['"][^'"]+['"]\s*;?\s*$/gm, "")
+    .replace(/\bexport\s+(?=(?:const|let|var|function|class|async|type|interface|enum)\b)/g, "")
+    .replace(/\bexport\s+default\s+/g, "")
+    // Keep import.meta usable after the static import pre-processing.
     .replace(/import\.meta\.url/g, '("file://" + __filename)')
+    // Record simulated dynamic-import targets instead of loading modules.
+    .replace(/\bimport\s*\(/g, "__optiprune_import(");
+}
 
-    // 2. Replace dynamic import( with the mock function
-    .replace(/\bimport\s*\(/g, '__optiprune_import(')
+type QuickJSSourceLoader = "ts" | "tsx" | "js" | "jsx";
 
-    // 3. Remove "as <Type>" casts (e.g. value as string, node as any)
-    .replace(/\s+as\s+[a-zA-Z0-9_<>\[\]|& ]+(?=[,;=)\n]|$)/g, '')
+function quickJSSourceLoader(file: string): QuickJSSourceLoader {
+  switch (path.extname(file).toLowerCase()) {
+    case ".ts":
+    case ".mts":
+    case ".cts":
+      return "ts";
+    case ".tsx":
+      return "tsx";
+    case ".jsx":
+      return "jsx";
+    default:
+      return "js";
+  }
+}
 
-    // 3b. Remove function/method return type annotations before the opening brace.
-    //     e.g. `async run(ctx): Promise<Finding[]> {` -> `async run(ctx) {`
-    //     The existing step 4 regex cannot handle this because its lookahead does
-    //     not include `{`, and the trailing `>` of a generic type is left behind,
-    //     causing a QuickJS SyntaxError ("expecting '{'").
-    .replace(/\)\s*:\s*[A-Za-z_$][A-Za-z0-9_$]*(?:<[^{]*?>)?\s*(?=\{)/g, ') ')
+/**
+ * Compiles the extracted source context to JavaScript before it reaches
+ * QuickJS. Regexes are deliberately limited to ESM simulation rewrites;
+ * esbuild performs all TypeScript/TSX syntax erasure and downleveling.
+ */
+const QUICKJS_CONTEXT_FUNCTION = "__optiprune_execute_context__";
 
-    // 3c. Remove complex parameter type annotations with generics containing commas
-    //     or intersection types, e.g.:
-    //       `(finding: Omit<Finding, "rule"> & { rule?: string })`
-    //     Step 4 only strips simple types and would partially remove `Omit<Finding`
-    //     (stopping at the comma inside the generic), leaving invalid JS like
-    //     `, "rule"> & { rule?: string })`.  This step handles the full pattern
-    //     before step 4 can corrupt it.
-    .replace(/:\s*[A-Za-z_$][A-Za-z0-9_$]*<[^)]*>\s*(?:&\s*\{[^}]*\})?\s*(?=\))/g, '')
+async function compileForQuickJS(code: string, sourceFile: string): Promise<string> {
+  // Candidate context can contain a captured function body, including `await`
+  // and `return`. Wrapping it first lets esbuild parse those statements in the
+  // same asynchronous function scope QuickJS will execute later.
+  const wrappedContext = `async function ${QUICKJS_CONTEXT_FUNCTION}() {\n${cleanForQuickJS(code)}\n}`;
+  const transformed = await transform(wrappedContext, {
+    loader: quickJSSourceLoader(sourceFile),
+    format: "esm",
+    target: "es2018",
+    sourcemap: false,
+    sourcefile: sourceFile,
+    legalComments: "none",
+  });
 
-    // 4. Remove TypeScript type annotations on variable/parameter
-    //    declarations, e.g. `: string`, `: Map<string, string[]>`.
-    //    We are careful NOT to remove ternary colons or object-literal
-    //    colons, so we only strip when the token after the colon looks
-    //    like a type expression (starts with a known type keyword or an
-    //    uppercase letter) and is followed by an assignment, comma,
-    //    closing paren/bracket, or end-of-line.
-    .replace(/:\s*(?:[a-zA-Z0-9_<>|& ]+(?:\[\])*)(?=\s*[,;=)\n]|$)/g, (match) => {
-      if (
-        match.includes('null') ||
-        match.includes('undefined') ||
-        match.includes('true') ||
-        match.includes('false')
-      ) {
-        return match;
-      }
-      const typePart = match.slice(1).trim();
-      const commonTypes = [
-        'string', 'number', 'boolean', 'any', 'void', 'unknown', 'never',
-        'string[]', 'any[]', 'number[]', 'boolean[]',
-        'Config', 'ModuleRecord', 'AnalysisContext',
-      ];
-      if (commonTypes.includes(typePart) || /^[A-Z]/.test(typePart)) {
-        return '';
-      }
-      return match;
-    })
+  return transformed.code;
+}
 
-    // 5. Remove generic type parameters on function calls that would
-    //    confuse the JS parser, e.g. foo<string>(...) -> foo(...)
-    //    Only strip simple single-identifier generics to avoid false
-    //    positives on comparison operators.
-    .replace(/\b([a-zA-Z_$][\w$]*)<[a-zA-Z0-9_,\s]+>\s*(?=\()/g, '$1')
+/**
+ * Installs a catch-all lexical scope for the simulation. A `with` block over
+ * this proxy resolves otherwise-unbound identifiers to a harmless callable
+ * proxy, allowing path construction to continue instead of aborting with a
+ * ReferenceError. Known globals and the explicit mocks still take priority.
+ */
+function installGlobalResilience(vm: QuickJSContext): void {
+  const result = vm.evalCode(`
+    (function() {
+      let fallbackMock;
+      const fallbackHandler = {
+        get(_target, property) {
+          if (property === "then" || property === Symbol.unscopables) return undefined;
+          if (property === Symbol.toPrimitive) return () => "";
+          if (property === "toJSON") return () => ({});
+          if (property === Symbol.iterator) {
+            return () => ({ next: () => ({ done: true }) });
+          }
+          return fallbackMock;
+        },
+        has() { return true; },
+        set() { return true; },
+        apply() { return fallbackMock; },
+        construct() { return fallbackMock; }
+      };
 
-    // 6. Remove TypeScript access modifiers and export keywords
-    //    We remove 'export ' but keep the declaration (const/let/var/function/class).
-    .replace(/\b(private|protected|public|readonly|override|abstract|declare)\s+/g, '')
-    .replace(/\bexport\s+(?=(?:const|let|var|function|class|async|type|interface|enum)\b)/g, '')
-    // Also handle 'export default'
-    .replace(/\bexport\s+default\s+/g, '')
+      fallbackMock = new Proxy(function __optiprune_empty_mock() {}, fallbackHandler);
+      globalThis.__create_resilient_mock = () => fallbackMock;
+      globalThis.__optiprune_scope__ = new Proxy(globalThis, {
+        has(_target, property) {
+          return property !== Symbol.unscopables;
+        },
+        get(target, property, receiver) {
+          if (property === Symbol.unscopables) return undefined;
+          if (Reflect.has(target, property)) {
+            return Reflect.get(target, property, receiver);
+          }
+          return fallbackMock;
+        }
+      });
+    })();
+  `);
 
-    // 7. Remove interface and type alias declarations
-    .replace(/^\s*(?:interface|type)\s+[A-Za-z_$][\w$]*[\s\S]*?(?=\n(?:export|const|let|var|function|class|async|\/\/|$))/gm, '')
+  if (result.error) {
+    const error = vm.dump(result.error);
+    result.error.dispose();
+    throw new Error(`Could not install the QuickJS resilience scope: ${String(error)}`);
+  }
 
-    // 8. Remove TypeScript enum declarations (they are not needed for
-    //    path simulation)
-    .replace(/^\s*(?:const\s+)?enum\s+[A-Za-z_$][\w$]*\s*\{[\s\S]*?\}\s*$/gm, '');
+  result.value.dispose();
+}
+
+function drainQuickJSPendingJobs(runtime: QuickJSRuntime, vm: QuickJSContext, maxJobs = 5000): void {
+  let remainingJobs = maxJobs;
+
+  while (runtime.hasPendingJob() && remainingJobs > 0) {
+    const result = runtime.executePendingJobs(1);
+    if (result.error) {
+      const error = vm.dump(result.error);
+      result.error.dispose();
+      throw new Error(`QuickJS pending job failed: ${String(error)}`);
+    }
+
+    if (result.value <= 0) {
+      break;
+    }
+    remainingJobs -= result.value;
+  }
 }
 
 /**
@@ -233,45 +279,23 @@ async function resolveDynamicImports(context: AnalysisContext, quickJS: any) {
       try {
         runtime.setMemoryLimit(context.options.layers.isolateMemoryLimitMb * 1024 * 1024);
         
-        // Setup Mocks
+        // Setup explicit runtime mocks first, then install the catch-all scope
+        // that safely absorbs additional, unknown globals from application code.
         setupQuickJSMocks(vm, candidate, context);
+        installGlobalResilience(vm);
 
         const globalHandle = vm.global;
         const targetsHandle = vm.newArray();
         vm.setProp(globalHandle, "__OPTIPRUNE_TARGETS__", targetsHandle);
-
-        // Define a resilient mock creator in the VM
-        const resilientMockCreator = vm.evalCode(`
-          (function() {
-            globalThis.__create_resilient_mock = function() {
-              const handler = {
-                get(target, prop) {
-                  if (prop === 'then') return undefined;
-                  if (prop === 'toJSON') return () => ({});
-                  // Return another proxy for any property access
-                  return new Proxy(function() {}, handler);
-                },
-                apply() {
-                  // Return another proxy for any function call
-                  return new Proxy(function() {}, handler);
-                }
-              };
-              return new Proxy({}, handler);
-            };
-          })()
-        `);
-        if (resilientMockCreator.error) {
-          resilientMockCreator.error.dispose();
-        } else {
-          resilientMockCreator.value.dispose();
-        }
 
         const importMockFn = vm.newFunction("__optiprune_import", (arg: QuickJSHandle) => {
           const target = vm.dump(arg);
           const currentTargets = vm.getProp(globalHandle, "__OPTIPRUNE_TARGETS__");
           const lenHandle = vm.getProp(currentTargets, "length");
           const len = vm.dump(lenHandle);
-          vm.setProp(currentTargets, len, vm.newString(String(target)));
+          const targetHandle = vm.newString(String(target));
+          vm.setProp(currentTargets, len, targetHandle);
+          targetHandle.dispose();
           lenHandle.dispose();
           currentTargets.dispose();
           
@@ -286,14 +310,17 @@ async function resolveDynamicImports(context: AnalysisContext, quickJS: any) {
         targetsHandle.dispose();
         globalHandle.dispose();
 
-        // Clean up code for QuickJS using the improved cleaner
-        const processedContext = cleanForQuickJS(candidate.contextCode);
+        // QuickJS only evaluates JavaScript. esbuild removes TypeScript/TSX
+        // syntax after the minimal import rewrites used for simulation.
+        const processedContext = await compileForQuickJS(candidate.contextCode, file);
 
         const simulationScript = `
           (async function() {
-            const __dirname = path.dirname(__filename);
             try {
-              ${processedContext}
+              with (globalThis.__optiprune_scope__) {
+                ${processedContext}
+                await ${QUICKJS_CONTEXT_FUNCTION}.call(globalThis);
+              }
             } catch (e) {
               if (globalThis.__VERBOSE__) {
                 console.log("[QuickJS Runtime Error] " + (e instanceof Error ? e.message : String(e)));
@@ -315,12 +342,8 @@ async function resolveDynamicImports(context: AnalysisContext, quickJS: any) {
           evalResult.error.dispose();
         } else {
           evalResult.value.dispose();
-          // FIX: Raise the pump deadline to allow async operations (fs.readdir,
-          // loop iterations) to complete fully before reading the results.
-          let deadline = 5000;
-          while (deadline-- > 0) {
-            if (runtime.executePendingJobs() === 0) break;
-          }
+          // Flush promise continuations created by async path construction.
+          drainQuickJSPendingJobs(runtime, vm);
         }
         
         const finalGlobalHandle = vm.global;
@@ -342,7 +365,7 @@ async function resolveDynamicImports(context: AnalysisContext, quickJS: any) {
               });
             }
             const edge = module.edges.find(e => 
-              e.kind === "unknown-dynamic" && 
+              (e.kind === "unknown-dynamic" || e.kind === "dynamic-pattern") && 
               e.location?.start.line === candidate.line && 
               e.location?.start.column === candidate.column
             );
