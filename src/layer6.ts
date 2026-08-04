@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'pathe';
-import { parseFile } from '@swc/core';
+import { parse as yukuParse } from 'yuku-parser';
 import * as yaml from 'js-yaml';
 import { readJsonFile } from './fs-utils.js';
 import type { AnalysisContext, Finding, ModuleRecord } from './types.js';
@@ -18,8 +18,9 @@ export interface DependencyNode {
 }
 
 /**
- * Parses a library's entry point `.d.ts` file using SWC.
+ * Parses a library's entry point `.d.ts` file using yuku-parser.
  * Handles Windows & POSIX paths natively.
+ * Replaces the previous SWC-based implementation.
  */
 export async function parseDtsWithSwc(entryPointRelative: string): Promise<DtsExportGraph> {
   const absolutePath = path.resolve(entryPointRelative);
@@ -28,28 +29,40 @@ export async function parseDtsWithSwc(entryPointRelative: string): Promise<DtsEx
     return { filePath: absolutePath, exportedTypes: new Set(), hasModuleAugmentation: false };
   }
 
-  const moduleAst = await parseFile(absolutePath, {
-    syntax: 'typescript',
-    dts: true,
-  } as any);
+  const source = fs.readFileSync(absolutePath, 'utf-8');
+  // yuku-parser: use 'dts' lang for declaration files
+  const result = yukuParse(source, { lang: 'dts', sourceType: 'module' });
+  const program = result.program as any;
 
   const exportedTypes = new Set<string>();
   let hasModuleAugmentation = false;
 
-  for (const item of (moduleAst as any).body as any[]) {
-    if (item.type === 'ExportDeclaration') {
-      if (item.declaration && 'identifier' in item.declaration) {
-        exportedTypes.add((item.declaration.identifier as any).value);
-      }
-    } else if (item.type === 'ExportNamedDeclaration') {
-      for (const spec of item.specifiers) {
-        if (spec.type === 'ExportSpecifier') {
-          exportedTypes.add(spec.exported?.value || spec.orig.value);
+  for (const item of (program.body ?? []) as any[]) {
+    // yuku-parser emits ESTree-compatible nodes (ExportNamedDeclaration, ExportDefaultDeclaration)
+    if (item.type === 'ExportNamedDeclaration') {
+      // Inline declaration: export interface Foo {}, export type Bar = ...
+      if (item.declaration) {
+        const decl = item.declaration as any;
+        if (decl.id?.name) {
+          exportedTypes.add(decl.id.name);
         }
       }
+      // Re-export specifiers: export { Foo, Bar }
+      for (const spec of (item.specifiers ?? []) as any[]) {
+        if (spec.type === 'ExportSpecifier') {
+          const name = spec.exported?.name ?? spec.local?.name;
+          if (name) exportedTypes.add(name);
+        }
+      }
+    } else if (item.type === 'ExportDefaultDeclaration') {
+      exportedTypes.add('default');
     }
 
-    if (item.type === 'TsModuleDeclaration') {
+    // Detect ambient module augmentation: declare module "..."
+    if (
+      item.type === 'TSModuleDeclaration' ||
+      (item.type === 'ExportNamedDeclaration' && item.declaration?.type === 'TSModuleDeclaration')
+    ) {
       hasModuleAugmentation = true;
     }
   }

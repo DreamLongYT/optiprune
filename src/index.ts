@@ -41,6 +41,7 @@ import type {
   ResolvedOptions,
 } from "./types.js";
 import { CONFIDENCE_RANK } from "./types.js";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = (await readJsonFile(path.join(__dirname, "..", "package.json"))) as { version?: string } | null;
 const VERSION = pkg?.version ?? "1.8.2";
@@ -139,7 +140,6 @@ export async function analyze(options: AnalyzerOptions): Promise<AnalysisReport>
     if (moduleRecord.parseStatus === "parsed") {
       filesParsed += 1;
       // Quick framework detection for Layer 5 gating
-      // ✅ FIXED FRAMEWORK DETECTION
       if (!hasFrameworkNodes && moduleRecord.ast) {
         walkAst(moduleRecord.ast, (rawNode) => {
           const node = rawNode as any;
@@ -164,7 +164,10 @@ export async function analyze(options: AnalyzerOptions): Promise<AnalysisReport>
   
   saveCache(resolvedOptions.rootDir, newCache);
 
-let entryPoints = new Set<string>();
+  let entryPoints = new Set<string>();
+  const publicEntryPoints = new Set<string>();
+
+  // 1. Explicit Entry Points
   if (entry.length > 0) {
     for (const pattern of entry) {
       const expanded = expandEntryPatterns(allSourceFiles, rootDir, [pattern]);
@@ -174,30 +177,43 @@ let entryPoints = new Set<string>();
     }
   }
 
-  const publicEntryPoints = new Set<string>();
-  if (includeConventionalEntries) {
-    const rootPackageEntries = await discoverPackageEntryPatterns(rootDir);
-    for (const pattern of [...rootPackageEntries, ...conventionalEntryPatterns()]) {
-      for (const expanded of expandEntryPatterns(allSourceFiles, rootDir, [pattern])) {
-        entryPoints.add(path.normalize(expanded));
+  // 2. Conventional Entry Points (Public)
+  // Helper to add patterns relative to a base directory
+  const addPatterns = async (baseDir: string, relativeToRoot: string = "", isRoot: boolean = false) => {
+    const rawEntries = await discoverPackageEntryPatterns(baseDir);
+    const entries = rawEntries.flatMap(e => {
+      if (e.startsWith('dist/')) {
+        const srcEntry = e.replace('dist/', 'src/').replace(/\.js$/, '.ts').replace(/\.jsx$/, '.tsx');
+        return [e, srcEntry];
+      }
+      return [e];
+    });
+
+    for (const pattern of [...entries, ...conventionalEntryPatterns()]) {
+      const adjustedPattern = (relativeToRoot && !pattern.startsWith('/')) 
+        ? path.posix.join(relativeToRoot, pattern) 
+        : pattern;
+      
+      const expanded = expandEntryPatterns(allSourceFiles, rootDir, [adjustedPattern]);
+      for (const e of expanded) {
+        const normalized = path.normalize(e);
+        if (isRoot && includeConventionalEntries) {
+          entryPoints.add(normalized);
+        }
+        // Monorepo package entries are ALWAYS publicEntryPoints to protect their API
+        publicEntryPoints.add(normalized);
       }
     }
+  };
 
-    // In a monorepo, we do NOT add all workspace entry points to the reachability 'entryPoints'.
-    // Instead, they are added to 'publicEntryPoints' to protect their exports, 
-    // but their files are only 'reachable' if imported by a root entry point or another reachable workspace.
-    if (resolvedOptions.monorepo) {
-      for (const pkg of resolvedOptions.monorepo.packageMap.values()) {
-        const pkgEntries = await discoverPackageEntryPatterns(pkg.location);
-        for (const pattern of [...pkgEntries, ...conventionalEntryPatterns()]) {
-          const relativeToRoot = path.posix.relative(rootDir, pkg.location);
-          const adjustedPattern = pattern.startsWith('/') ? pattern : path.posix.join(relativeToRoot, pattern);
-          for (const expanded of expandEntryPatterns(allSourceFiles, rootDir, [adjustedPattern])) {
-            // Only add to publicEntryPoints, NOT to reachability entryPoints
-            publicEntryPoints.add(path.normalize(expanded));
-          }
-        }
-      }
+  // Root entries
+  await addPatterns(rootDir, "", true);
+
+  // Monorepo sub-package entries
+  if (resolvedOptions.monorepo) {
+    for (const pkg of resolvedOptions.monorepo.packageMap.values()) {
+      const relativeToRoot = path.posix.relative(rootDir, pkg.location);
+      await addPatterns(pkg.location, relativeToRoot, false);
     }
   }
 
@@ -212,25 +228,6 @@ let entryPoints = new Set<string>();
       file: rootDir,
       evidence: {},
     });
-  }
-
-  if (includeConventionalEntries) {
-    const rawPackageEntries = await discoverPackageEntryPatterns(rootDir);
-    const rootPackageEntries = rawPackageEntries.flatMap(entry => {
-      // If the entry points to dist/, also look for the corresponding src/ file
-      if (entry.startsWith('dist/')) {
-        const srcEntry = entry.replace('dist/', 'src/').replace(/\.js$/, '.ts').replace(/\.jsx$/, '.tsx');
-        return [entry, srcEntry];
-      }
-      return [entry];
-    });
-
-    // Include both package.json entries and conventional entries (index, main, cli, etc.)
-    for (const pattern of [...rootPackageEntries, ...conventionalEntryPatterns()]) {
-      for (const expanded of expandEntryPatterns(allSourceFiles, rootDir, [pattern])) {
-        publicEntryPoints.add(path.normalize(expanded));
-      }
-    }
   }
 
   const context = contextWithGraph(modules, entryPoints, resolvedOptions);
@@ -249,8 +246,6 @@ let entryPoints = new Set<string>();
 
   // Headless Living Graph Engine: Initial Ingestion
   for (const module of modules.values()) {
-    // In a full implementation, we would extract semantic nodes from the AST here.
-    // For now, we create a representative FileNode.
     const fileNode = {
       id: SemanticGraph.generateLei(module.id, 'File'),
       contentHash: SemanticGraph.generateContentHash(module.sourceText),
@@ -340,14 +335,12 @@ let entryPoints = new Set<string>();
   }
 
   // Final Reporting Phase: Unused Exports & Unreachable Files
-  // We do this at the end so all layers (Layer 4, 7, etc.) have a chance to refine reachability and usage.
   if (resolvedOptions.reportUnusedExports) {
     const importUsage = buildImportUsage(modules);
     for (const module of modules.values()) {
       if (context.reachable.has(module.id) || context.maybeReachable.has(module.id)) {
         for (const exp of module.exports) {
           if (exp.isExternalContract) continue;
-          if ((context as any).publicEntryPoints?.has(module.id)) continue;
 
           const isExportUsed = context.usedExports.has(`${module.id}:${exp.exportedAs}`);
           
@@ -358,37 +351,48 @@ let entryPoints = new Set<string>();
           if (context.hasReachableUnknownDynamicBoundary && isExportUsed) continue;
           
           let isEffectivelyUsed = isExportUsed;
-          if (isExportUsed) {
+          
+          // PUBLIC ENTRY POINT & BARREL PROTECTION
+          const visited = new Set<string>();
+          const checkPublicReachability = (moduleId: string): boolean => {
+            if (visited.has(moduleId)) return false;
+            visited.add(moduleId);
+            
+            if (publicEntryPoints.has(moduleId)) return true;
+            
+            const usage = importUsage.get(moduleId);
+            if (!usage || !usage.reExportOnly) return false;
+            
+            // If this module is only a re-exporter (Barrel), check if its consumers are public
+            return Array.from(usage.consumers).some(c => checkPublicReachability(c));
+          };
+
+          if (checkPublicReachability(module.id)) {
+            isEffectivelyUsed = true;
+          } else if (isExportUsed) {
             const usage = importUsage.get(module.id);
             if (usage && usage.reExportOnly) {
-              // DEEP BARREL FIX: The 'hasRealConsumer' check must be recursive or account 
-              // for long chains of re-export-only modules (Barrels).
-              const visited = new Set<string>();
+              const deepVisited = new Set<string>();
               const checkConsumer = (consumerId: string): boolean => {
-                if (visited.has(consumerId)) return false;
-                visited.add(consumerId);
+                if (deepVisited.has(consumerId)) return false;
+                deepVisited.add(consumerId);
                 
                 if (context.entryPoints.has(consumerId)) return true;
-                if ((context as any).publicEntryPoints?.has(consumerId)) return true;
+                if (publicEntryPoints.has(consumerId)) return true;
                 
                 const consumerUsage = importUsage.get(consumerId);
                 if (!consumerUsage) return false;
                 if (!consumerUsage.reExportOnly) return true;
                 
-                // If the consumer is itself re-export only, check ITS consumers
                 return Array.from(consumerUsage.consumers).some(c => checkConsumer(c));
               };
-
+              
               const hasRealConsumer = Array.from(usage.consumers).some(c => checkConsumer(c));
               if (!hasRealConsumer) {
                 isEffectivelyUsed = false;
               }
             }
           }
-
-          // Fix 3: We now track local references to types, so we can safely report 
-          // unused type-only exports if they are truly not referenced anywhere.
-          // (Previously skipped to avoid false positives).
 
           if (!isEffectivelyUsed && exp.exportedAs !== "default") {
             findings.push({
@@ -409,12 +413,7 @@ let entryPoints = new Set<string>();
   for (const module of modules.values()) {
     if (!context.reachable.has(module.id) && !context.maybeReachable.has(module.id)) {
       const fileComponent = context.components.find((c) => c.modules.includes(module.id));
-      
-      // Enhanced SCC Reachability Check: 
-      // If the file is part of a component that was explicitly marked as unreachable,
-      // we provide a more descriptive message.
       const isIsolatedComponent = fileComponent && !fileComponent.isReachable && !fileComponent.isMaybeReachable;
-      
       findings.push({
         rule: "unreachable-file",
         severity: "warning",
@@ -491,7 +490,6 @@ export function shouldFail(report: AnalysisReport, failOn: ResolvedOptions["fail
   if (failOn === "none") {
     return false;
   }
-
   const failThreshold = CONFIDENCE_RANK[failOn];
   return report.findings.some((f) => CONFIDENCE_RANK[f.confidence] >= failThreshold);
 }

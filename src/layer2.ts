@@ -169,10 +169,12 @@ function isTerminal(node: any): boolean {
 }
 
 function evaluateStaticCondition(node: any): boolean | undefined {
-  if (node.type === "BooleanLiteral") return node.value;
-  if (node.type === "NumericLiteral") return Boolean(node.value);
-  if (node.type === "StringLiteral") return Boolean(node.value);
-  if (node.type === "NullLiteral") return false;
+  if (!node) return undefined;
+
+  // ESTree standard literal handling
+  if (node.type === "Literal") {
+    return Boolean(node.value);
+  }
   
   if (node.type === "UnaryExpression" && node.operator === "!") {
     const val = evaluateStaticCondition(node.argument);
@@ -181,16 +183,12 @@ function evaluateStaticCondition(node: any): boolean | undefined {
 
   // Basic literal comparisons: 1 === 2, "a" !== "b"
   if (node.type === "BinaryExpression") {
-    const left = evaluateStaticCondition(node.left);
-    const right = evaluateStaticCondition(node.right);
-    
-    // If both are literals, we can evaluate
     const leftLit = getLiteralValue(node.left);
     const rightLit = getLiteralValue(node.right);
     
     if (leftLit !== undefined && rightLit !== undefined) {
-        if (node.operator === "===" || node.operator === "==") return leftLit === rightLit;
-        if (node.operator === "!==" || node.operator === "!=") return leftLit !== rightLit;
+      if (node.operator === "===" || node.operator === "==") return leftLit === rightLit;
+      if (node.operator === "!==" || node.operator === "!=") return leftLit !== rightLit;
     }
   }
 
@@ -198,11 +196,19 @@ function evaluateStaticCondition(node: any): boolean | undefined {
 }
 
 function getLiteralValue(node: any): any {
-    if (node.type === "StringLiteral") return node.value;
-    if (node.type === "NumericLiteral") return node.value;
-    if (node.type === "BooleanLiteral") return node.value;
-    if (node.type === "NullLiteral") return null;
-    return undefined;
+  if (!node) return undefined;
+  
+  // ESTree / Yuku standard Literal check
+  if (node.type === "Literal") {
+    return node.value;
+  }
+
+  // Handle BigInt literals if present in ESTree (e.g., 1n)
+  if (node.type === "BigIntLiteral") {
+    return node.value;
+  }
+  
+  return undefined;
 }
 
 function isContradictory(left: any, right: any): boolean {

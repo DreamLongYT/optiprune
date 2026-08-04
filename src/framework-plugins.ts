@@ -1,5 +1,4 @@
 import { AnalyzerPlugin } from "./types.js";
-import * as t from "@babel/types";
 
 /**
  * Utility to check for dependencies in package.json
@@ -21,14 +20,46 @@ export const ReactPlugin: AnalyzerPlugin = {
     return await hasDependency(adapter, 'react');
   },
   lifecycle: {
-    onASTNode: (node, fileId, adapter) => {
-      // 1. Detect React components (Functions starting with uppercase)
-      if (t.isFunctionDeclaration(node) && node.id && /^[A-Z]/.test(node.id.name)) {
-        adapter.markAsUsed(fileId, node.id.name);
+    onASTNode: (node: any, fileId, adapter) => {
+      let targetNode = node;
+
+      // Unwrap export declarations
+      if (
+        (node.type === 'ExportNamedDeclaration' || node.type === 'ExportDefaultDeclaration') &&
+        node.declaration
+      ) {
+        targetNode = node.declaration;
       }
 
-      // 2. Detect hooks (Functions starting with 'use')
-      if (t.isCallExpression(node) && t.isIdentifier(node.callee) && node.callee.name.startsWith('use')) {
+      // 1. Function Declarations: function MyComponent() {}
+      if (targetNode.type === 'FunctionDeclaration' && targetNode.id && /^[A-Z]/.test(targetNode.id.name)) {
+        adapter.markAsUsed(fileId, targetNode.id.name);
+      }
+
+      // 2. Variable Declarations: const MyComponent = () => ... or function expression / JSX
+      if (targetNode.type === 'VariableDeclaration' && Array.isArray(targetNode.declarations)) {
+        for (const decl of targetNode.declarations) {
+          if (decl.id?.type === 'Identifier' && /^[A-Z]/.test(decl.id.name)) {
+            const init = decl.init;
+            if (
+              init &&
+              (init.type === 'ArrowFunctionExpression' ||
+               init.type === 'FunctionExpression' ||
+               init.type === 'JSXElement')
+            ) {
+              adapter.markAsUsed(fileId, decl.id.name);
+            }
+          }
+        }
+      }
+
+      // 3. Hooks: useFoo() call expressions
+      if (
+        node.type === 'CallExpression' &&
+        node.callee?.type === 'Identifier' &&
+        typeof node.callee.name === 'string' &&
+        node.callee.name.startsWith('use')
+      ) {
         adapter.markAsUsed(fileId);
       }
     }
@@ -47,11 +78,9 @@ export const NextjsPlugin: AnalyzerPlugin = {
   },
   lifecycle: {
     onProjectInit: async (adapter) => {
-      // Read next.config.js to look for custom entry points or redirects
       const nextConfig = await adapter.readFile('next.config.js') || await adapter.readFile('next.config.mjs');
       if (nextConfig) {
-        // In a real implementation, we would parse the config to find custom rewrites/redirects
-        // For now, we just log that we found it
+        // Logged/handled if present
       }
     },
     onFileStart: (fileId, adapter) => {
@@ -63,10 +92,10 @@ export const NextjsPlugin: AnalyzerPlugin = {
         adapter.markAsUsed(fileId);
       }
     },
-    onASTNode: (node, fileId, adapter) => {
-      if (t.isExportNamedDeclaration(node) && node.declaration) {
+    onASTNode: (node: any, fileId, adapter) => {
+      if (node.type === 'ExportNamedDeclaration' && node.declaration) {
         const decl = node.declaration;
-        if (t.isFunctionDeclaration(decl) && decl.id) {
+        if (decl.type === 'FunctionDeclaration' && decl.id) {
           const name = decl.id.name;
           if (['getStaticProps', 'getServerSideProps', 'getStaticPaths', 'generateMetadata', 'generateStaticParams'].includes(name)) {
             adapter.markAsUsed(fileId, name);
@@ -89,10 +118,9 @@ export const NuxtPlugin: AnalyzerPlugin = {
   },
   lifecycle: {
     onProjectInit: async (adapter) => {
-      // Read nuxt.config.ts to look for custom modules or dir overrides
       const nuxtConfig = await adapter.readFile('nuxt.config.ts') || await adapter.readFile('nuxt.config.js');
       if (nuxtConfig) {
-        // Example: Nuxt might have custom directory configurations
+        // Custom directory configs
       }
     },
     onFileStart: (fileId, adapter) => {
@@ -101,8 +129,8 @@ export const NuxtPlugin: AnalyzerPlugin = {
         adapter.markAsUsed(fileId);
       }
     },
-    onASTNode: (node, fileId, adapter) => {
-      if (t.isCallExpression(node) && t.isIdentifier(node.callee)) {
+    onASTNode: (node: any, fileId, adapter) => {
+      if (node.type === 'CallExpression' && node.callee?.type === 'Identifier') {
         if (['definePageMeta', 'defineNuxtComponent', 'useNuxtApp', 'useFetch', 'defineEventHandler'].includes(node.callee.name)) {
           adapter.markAsUsed(fileId);
         }

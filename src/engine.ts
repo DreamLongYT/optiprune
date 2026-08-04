@@ -1,6 +1,6 @@
 import { AnalysisContext, ModuleRecord, AnalyzerPlugin, PluginAdapter, Finding } from "./types.js";
-import traverse from "@babel/traverse";
-import * as t from "@babel/types";
+import { walkAst as yukuWalk } from "./parser.js";
+import { t } from "./ast-utils.js";
 import fs from "node:fs/promises";
 import path from "pathe";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -99,17 +99,15 @@ export class PluginEngine {
       }
 
       // onASTNode (Traversal)
-      const traverseFn = (traverse as any).default || traverse;
+      // Use yuku-parser's walk instead of @babel/traverse
       try {
-        traverseFn(module.ast, {
-          enter: (path: any) => {
-            for (const plugin of this.plugins) {
-              if (plugin.enabled && plugin.lifecycle.onASTNode) {
-                try {
-                  plugin.lifecycle.onASTNode(path.node, module.id, adapter);
-                } catch (err) {
-                  // Suppress per-node errors to avoid flooding logs, but ensure isolation
-                }
+        yukuWalk(module.ast as any, (node: any) => {
+          for (const plugin of this.plugins) {
+            if (plugin.enabled && plugin.lifecycle.onASTNode) {
+              try {
+                plugin.lifecycle.onASTNode(node, module.id, adapter);
+              } catch (err) {
+                // Suppress per-node errors to avoid flooding logs, but ensure isolation
               }
             }
           }

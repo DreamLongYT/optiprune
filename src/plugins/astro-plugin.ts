@@ -1,5 +1,5 @@
 import { AnalyzerPlugin } from "../types.js";
-import * as t from "@babel/types";
+import { t } from "../ast-utils.js";
 
 /**
  * Astro Plugin

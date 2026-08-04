@@ -69,35 +69,49 @@ function analyzeDITopology(context: AnalysisContext): ImplicitEdge[] {
 
     walkAst(module.ast, (rawNode) => {
       const node = rawNode as any;
-      
-      // Look for @Injectable(), @Inject('TOKEN'), etc.
-      const decorators = getDecorators(node);
-      
-      // Provider detection: @Injectable(), @Module()
-      const isProvider = decorators.some(d => ['Injectable', 'Module', 'Service'].includes(d.name));
-      if (isProvider && (node.type === 'ClassDeclaration' || (node.type === 'ExportNamedDeclaration' && node.declaration?.type === 'ClassDeclaration'))) {
-        const classNode = node.type === 'ClassDeclaration' ? node : node.declaration;
+
+      // Extract classNode whether it's standalone or exported
+      const classNode =
+        node.type === "ClassDeclaration"
+          ? node
+          : node.type === "ExportNamedDeclaration" && node.declaration?.type === "ClassDeclaration"
+          ? node.declaration
+          : null;
+
+      if (classNode) {
+        // Gather decorators from both outer Export declaration AND inner Class declaration
+        const decorators = [
+          ...getDecorators(node),
+          ...getDecorators(classNode),
+        ];
+
+        const isProvider = decorators.some((d) =>
+          ["Injectable", "Module", "Service"].includes(d.name)
+        );
         const className = classNode.id?.name;
-        if (className) {
-          // In a real DI engine, tokens can be strings, symbols, or classes.
-          // Here we assume the class name is the token unless specified.
+
+        if (isProvider && className) {
           providers.set(className, { file: module.id, symbol: className });
         }
-      }
 
-      // Consumer detection: @Inject('TOKEN') in constructor
-      if (node.type === 'ClassDeclaration' || (node.type === 'ExportNamedDeclaration' && node.declaration?.type === 'ClassDeclaration')) {
-        const classNode = node.type === 'ClassDeclaration' ? node : node.declaration;
-        const className = classNode.id?.name;
-        
-        const constructor = classNode.body?.body?.find((m: any) => m.kind === 'constructor');
+        // Check constructor parameters for @Inject('TOKEN')
+        const constructor = classNode.body?.body?.find(
+          (m: any) => m.kind === "constructor"
+        );
         if (constructor) {
-          for (const param of constructor.params || []) {
-            const paramDecorators = getDecorators(param);
-            const injectDecorator = paramDecorators.find(d => d.name === 'Inject');
+          const params = constructor.params || constructor.value?.params || [];
+          for (const rawParam of params) {
+            const param =
+              rawParam.type === "TSParameterProperty" ? rawParam.parameter : rawParam;
+            const paramDecorators = [
+              ...getDecorators(rawParam),
+              ...getDecorators(param),
+            ];
+
+            const injectDecorator = paramDecorators.find((d) => d.name === "Inject");
             if (injectDecorator && injectDecorator.args.length > 0) {
               const token = injectDecorator.args[0];
-              if (typeof token === 'string') {
+              if (typeof token === "string" && className) {
                 consumers.push({ file: module.id, symbol: className, token });
               }
             }
@@ -106,14 +120,11 @@ function analyzeDITopology(context: AnalysisContext): ImplicitEdge[] {
       }
 
       // container.bind('TOKEN').to(Service)
-      if (node.type === 'CallExpression' && node.callee.type === 'MemberExpression') {
-        if (node.callee.property.name === 'bind' && node.arguments.length > 0) {
+      if (node.type === "CallExpression" && node.callee.type === "MemberExpression") {
+        if (node.callee.property.name === "bind" && node.arguments.length > 0) {
           const token = getLiteralValue(node.arguments[0]);
           if (token) {
-            // Find the .to(Service) part
-            // This is a simplified chain traversal
-            let current = node;
-            // In a real implementation, we'd walk up or down the call chain
+            // Simplified chain traversal
           }
         }
       }
@@ -126,10 +137,10 @@ function analyzeDITopology(context: AnalysisContext): ImplicitEdge[] {
     if (provider) {
       edges.push({
         id: `di-${consumer.file}-${consumer.token}`,
-        type: 'DI_INJECTION',
+        type: "DI_INJECTION",
         provider: { ...provider, token: consumer.token },
         consumer: { file: consumer.file, symbol: consumer.symbol },
-        status: 'ACTIVE'
+        status: "ACTIVE",
       });
     }
   }
@@ -160,7 +171,7 @@ function analyzeEventContracts(context: AnalysisContext): ImplicitEdge[] {
           if (typeof topic === 'string') {
             consumers.push({
               file: module.id,
-              symbol: 'unknown', // Would need class context
+              symbol: 'unknown',
               handler: node.key.name,
               topic
             });
@@ -209,8 +220,7 @@ async function analyzeDynamicSpecifiers(context: AnalysisContext): Promise<Resol
       if (edge.kind === 'dynamic-pattern' && edge.dynamicPattern) {
         const { prefix, suffix } = edge.dynamicPattern;
         
-        // Construct a bounded glob-like search
-        // In this implementation, we filter the already discovered files
+        // Bounded glob search over mapped modules
         const resolvedFiles = allFiles.filter(f => {
           const relative = path.relative(path.dirname(module.id), f);
           const normalizedRelative = relative.startsWith('.') ? relative : './' + relative;
@@ -244,22 +254,17 @@ function applyLayer7Results(
   for (const edge of implicitEdges) {
     if (edge.status === 'ACTIVE') {
       if (edge.type === 'DI_INJECTION' && edge.provider) {
-        // DI makes the provider reachable from the consumer
         if (context.reachable.has(edge.consumer.file)) {
           context.reachable.add(edge.provider.file);
-          // Also mark the specific export as used
           context.usedExports.add(`${edge.provider.file}:${edge.provider.symbol}`);
         }
       } else if (edge.type === 'EVENT_CONTRACT') {
-        // If there's a producer, the consumer is reachable
-        // For event contracts, we often treat them as "maybe reachable" or entry points
-        // depending on if any producer exists in the graph.
         context.reachable.add(edge.consumer.file);
         context.usedExports.add(`${edge.consumer.file}:${edge.consumer.handler}`);
       }
     } else if (edge.status === 'DEAD_ORPHANED_CONSUMER') {
       findings.push({
-        rule: "protected-contract", // Reusing existing rule or could add "orphaned-contract"
+        rule: "protected-contract",
         severity: "warning",
         confidence: "high",
         message: `Orphaned Event Consumer: No producers found for topic '${edge.topic}'.`,
@@ -282,9 +287,11 @@ function applyLayer7Results(
 // --- Utilities ---
 
 function getDecorators(node: any): Array<{ name: string; args: any[] }> {
+  if (!node) return [];
+
   const decorators: any[] = [
-    ...(Array.isArray(node.decorators) ? node.decorators : []),
-    ...(Array.isArray(node.modifiers)
+    ...(Array.isArray(node?.decorators) ? node.decorators : []),
+    ...(Array.isArray(node?.modifiers)
       ? node.modifiers.filter((m: any) => m.type === 'Decorator' || m.kind === 'Decorator')
       : []),
   ];
@@ -292,21 +299,36 @@ function getDecorators(node: any): Array<{ name: string; args: any[] }> {
   return decorators.map(d => {
     const expr = d.expression || d;
     if (expr.type === 'CallExpression') {
+      let name = 'unknown';
+      if (expr.callee.type === 'Identifier') {
+        name = expr.callee.name;
+      } else if (expr.callee.type === 'MemberExpression' && expr.callee.property.type === 'Identifier') {
+        name = expr.callee.property.name;
+      }
       return {
-        name: expr.callee.name || (expr.callee.property ? expr.callee.property.name : 'unknown'),
-        args: expr.arguments.map((a: any) => getLiteralValue(a))
+        name,
+        args: expr.arguments.map((a: any) => getLiteralOrIdentifierValue(a))
       };
     }
     return {
-      name: expr.name || 'unknown',
+      name: expr.name || (expr.type === 'Identifier' ? expr.name : 'unknown'),
       args: []
     };
   });
 }
 
+function getLiteralOrIdentifierValue(node: any): any {
+  if (!node) return undefined;
+  if (node.type === 'Identifier') return node.name;
+  return getLiteralValue(node);
+}
+
 function getLiteralValue(node: any): any {
   if (!node) return undefined;
-  if (node.type === 'StringLiteral' || node.type === 'Literal') return node.value;
+  // ESTree Literal (Yuku)
+  if (node.type === 'Literal') return node.value;
+  // Babel Compatibility
+  if (node.type === 'StringLiteral' || node.type === 'NumericLiteral' || node.type === 'BooleanLiteral') return node.value;
   if (node.type === 'TemplateLiteral') {
     if (node.expressions.length === 0) return node.quasis[0].value.cooked;
   }
