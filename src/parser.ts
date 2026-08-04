@@ -361,27 +361,30 @@ function extractAstModule(sourceText: string, file: string, ast: AstNode, parser
       const parent = stack[stack.length - 1];
       if (parent) {
         let isRef = true;
+        // Definitions/Names of exports are NOT references to other symbols
         if ((parent.type === "FunctionDeclaration" || parent.type === "ClassDeclaration" || parent.type === "TSInterfaceDeclaration" || parent.type === "TSTypeAliasDeclaration" || parent.type === "TSEnumDeclaration" || parent.type === "VariableDeclarator") && parent.id === node) isRef = false;
+        if (parent.type === "ExportSpecifier" && (parent.local === node || parent.exported === node)) isRef = false;
+        if (parent.type === "ExportDefaultDeclaration" && parent.declaration === node) isRef = false;
+        if (parent.type === "ImportSpecifier" || parent.type === "ImportDefaultSpecifier" || parent.type === "ImportNamespaceSpecifier") isRef = false;
+        
+        // Property keys are not references to top-level symbols
         if (parent.type === "MemberExpression" && parent.property === node && !parent.computed) isRef = false;
         if (parent.type === "ObjectProperty" && parent.key === node && !parent.computed) isRef = false;
         if (parent.type === "TSPropertySignature" && parent.key === node) isRef = false;
         if (parent.type === "TSMethodSignature" && parent.key === node) isRef = false;
-        if (parent.type === "ImportSpecifier" || parent.type === "ImportDefaultSpecifier" || parent.type === "ImportNamespaceSpecifier") isRef = false;
 
         if (isRef) {
           const active = getActiveDeclaration(stack);
-          if (active && active !== node.name) {
-            if (!localSymbolDeps.has(active)) localSymbolDeps.set(active, new Set());
-            localSymbolDeps.get(active)!.add(node.name as string);
-          }
-          
-          // INTERNAL REFERENCE FIX: Track all identifier usages to detect 
-          // usage of exports within the same file.
-          // We only track it if it's NOT a top-level declaration.
-          const isTopLevelDecl = stack.some(n => n.type === "ExportNamedDeclaration" || n.type === "ExportDefaultDeclaration") && stack.length <= 4;
-          if (!isTopLevelDecl) {
-            if (!localSymbolDeps.has("*")) localSymbolDeps.set("*", new Set());
-            localSymbolDeps.get("*")!.add(node.name as string);
+          if (active) {
+            if (active !== node.name) {
+              if (!localSymbolDeps.has(active)) localSymbolDeps.set(active, new Set());
+              localSymbolDeps.get(active)!.add(node.name as string);
+            }
+          } else {
+            // Top-level usage (code not inside a function/class)
+            // Use empty string as the key for top-level references
+            if (!localSymbolDeps.has("")) localSymbolDeps.set("", new Set());
+            localSymbolDeps.get("")!.add(node.name as string);
           }
         }
       }

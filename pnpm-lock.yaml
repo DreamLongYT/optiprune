@@ -26,6 +26,9 @@ importers:
       quickjs-emscripten:
         specifier: ^0.32.0
         version: 0.32.0
+      yuku-ast:
+        specifier: ^0.8.3
+        version: 0.8.3
       yuku-codegen:
         specifier: ^0.8.3
         version: 0.8.3
